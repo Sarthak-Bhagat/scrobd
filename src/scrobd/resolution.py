@@ -5,7 +5,7 @@ sink's job, which keeps the resolver testable with no network and makes a
 second sink cost nothing here.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 Kind = Literal["episode", "movie", "unknown"]
@@ -15,6 +15,8 @@ Source = Literal["filename", "index", "alias", "search"]
 
 @dataclass(frozen=True)
 class Resolution:
+    """The identity of one media file, in library ids."""
+
     kind: Kind
     ids: dict
     season: int | None
@@ -24,11 +26,14 @@ class Resolution:
     confidence: Confidence
     source: Source
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Reject identities that are internally inconsistent."""
         if self.kind == "episode" and (self.season is None or self.episode is None):
-            raise ValueError("an episode needs both season and episode")
+            msg = "an episode needs both season and episode"
+            raise ValueError(msg)
         if self.kind == "movie" and (self.season is not None or self.episode is not None):
-            raise ValueError("a movie carries no season or episode")
+            msg = "a movie carries no season or episode"
+            raise ValueError(msg)
 
     @property
     def is_actionable(self) -> bool:

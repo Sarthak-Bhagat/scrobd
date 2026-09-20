@@ -14,19 +14,26 @@ APP = "scrobd"
 
 def _base(env_var: str, *fallback: str) -> Path:
     root = os.environ.get(env_var)
-    base = Path(root) if root else Path(os.environ.get("HOME", "~")).expanduser().joinpath(*fallback)
+    base = (
+        Path(root)
+        if root
+        else Path(os.environ.get("HOME", "~")).expanduser().joinpath(*fallback)
+    )
     d = base / APP
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def config_dir() -> Path:
+    """Return scrobd's XDG config directory, creating it if needed."""
     return _base("XDG_CONFIG_HOME", ".config")
 
 
 def data_dir() -> Path:
+    """Return scrobd's XDG data directory, creating it if needed."""
     return _base("XDG_DATA_HOME", ".local", "share")
 
 
 def state_dir() -> Path:
+    """Return scrobd's XDG state directory, creating it if needed."""
     return _base("XDG_STATE_HOME", ".local", "state")

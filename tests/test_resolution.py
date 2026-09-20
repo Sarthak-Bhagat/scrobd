@@ -1,11 +1,15 @@
+"""Resolution's frozen-record invariants: episode/movie identity rules, actionability."""
+
 import dataclasses
+
 import pytest
-from scrobd.resolution import Resolution, UNKNOWN
+
+from scrobd.resolution import UNKNOWN, Resolution
 
 
 def make(**kw):
-    base = dict(kind="episode", ids={"tvdb": 1}, season=1, episode=1,
-                absolute=None, title="X", confidence="exact", source="filename")
+    base = {"kind": "episode", "ids": {"tvdb": 1}, "season": 1, "episode": 1,
+            "absolute": None, "title": "X", "confidence": "exact", "source": "filename"}
     base.update(kw)
     return Resolution(**base)
 

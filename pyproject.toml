@@ -5,8 +5,8 @@ description = "Identity-first scrobbler for a *arr-managed library"
 requires-python = ">=3.11"
 dependencies = []
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0"]
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.14"]
 
 [project.scripts]
 scrobd = "scrobd.cli:main"
@@ -17,3 +17,32 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+
+# Every entry states why the rule cannot apply here, not that it is noisy.
+ignore = [
+  "D203",    # mutually exclusive with D211, which is the one we keep; ruff warns if both are on
+  "D213",    # mutually exclusive with D212, which is the one we keep; same
+  "COM812",  # trailing commas are the formatter's output, not a lint decision
+  "ISC001",  # implicit string concatenation: same, the formatter owns it
+  "CPY001",  # per-file copyright headers: no legal requirement on a single-user tool
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "S101",     # the rule guards production code, where `assert` is stripped under
+              # `python -O`. pytest IS assert; there is no production path here.
+  "PLR2004",  # a literal expectation is the content of a test, not a magic number
+  "ANN",      # a test is fixtures in, None out; annotating that carries no information
+  "D103",     # a test's name is its documentation. D100 still applies, so every test
+              # module must say in one line what it covers.
+  "INP001",   # tests/ is deliberately not a package. The shadowing this rule guards
+              # against needs two test modules sharing a basename; all ours are unique.
+]

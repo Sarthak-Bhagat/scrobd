@@ -1,5 +1,5 @@
-import os
-from pathlib import Path
+"""XDG directory resolution: env overrides, spec-default fallback, dir creation."""
+
 from scrobd import paths
 
 
