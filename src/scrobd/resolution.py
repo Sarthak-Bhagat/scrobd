@@ -1,0 +1,40 @@
+"""What the resolver returns.
+
+Library ids only -- tvdb, imdb, tmdb. Converting to a SIMKL or MAL id is the
+sink's job, which keeps the resolver testable with no network and makes a
+second sink cost nothing here.
+"""
+
+from dataclasses import dataclass, field
+from typing import Literal
+
+Kind = Literal["episode", "movie", "unknown"]
+Confidence = Literal["exact", "high", "low", "none"]
+Source = Literal["filename", "index", "alias", "search"]
+
+
+@dataclass(frozen=True)
+class Resolution:
+    kind: Kind
+    ids: dict
+    season: int | None
+    episode: int | None
+    absolute: int | None
+    title: str
+    confidence: Confidence
+    source: Source
+
+    def __post_init__(self):
+        if self.kind == "episode" and (self.season is None or self.episode is None):
+            raise ValueError("an episode needs both season and episode")
+        if self.kind == "movie" and (self.season is not None or self.episode is not None):
+            raise ValueError("a movie carries no season or episode")
+
+    @property
+    def is_actionable(self) -> bool:
+        """Whether this may be sent to a sink without asking first."""
+        return self.confidence in ("exact", "high")
+
+
+UNKNOWN = Resolution(kind="unknown", ids={}, season=None, episode=None,
+                     absolute=None, title="", confidence="none", source="filename")
