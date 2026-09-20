@@ -1,0 +1,19 @@
+[project]
+name = "scrobd"
+version = "0.1.0"
+description = "Identity-first scrobbler for a *arr-managed library"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+scrobd = "scrobd.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
