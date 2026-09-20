@@ -10,9 +10,16 @@ measure of how much a single answer is worth.
 """
 
 import json
+import re
 from pathlib import Path
 
 from .paths import state_dir
+
+# Sonarr's own folder formats: seasonFolderFormat is "Season {season:00}" and
+# specialsFolderFormat is "Specials". Match those exactly. A startswith("season")
+# prefix swallowed real titles -- "Season of the Witch (2011)" is a film, not a
+# season folder -- and missed "Specials", which collided every show's specials.
+_SEASON_DIR = re.compile(r"season\s*\d+|specials", re.IGNORECASE)
 
 
 def _file() -> Path:
@@ -34,11 +41,9 @@ def _save(table: dict) -> None:
 
 
 def _folder_key(path: str) -> str:
-    """Return the series folder for path, walking up past a Season NN directory."""
+    """Return the folder a queue entry keys on: the series, never one of its seasons."""
     parent = Path(path).parent
-    if parent.name.lower().startswith("season"):
-        parent = parent.parent
-    return parent.name
+    return parent.parent.name if _SEASON_DIR.fullmatch(parent.name) else parent.name
 
 
 def add(path: str, title: str) -> None:
