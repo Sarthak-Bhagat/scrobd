@@ -3,6 +3,7 @@
 import pytest
 
 from scrobd import aliases
+from scrobd.paths import data_dir
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +46,5 @@ def test_persists_across_processes():
 
 
 def test_corrupt_file_degrades_to_empty():
-    from scrobd.paths import data_dir
     (data_dir() / "aliases.json").write_text("{broken")
     assert aliases.lookup("/x/Anything/Season 01/x - S01E01 - t.mkv").confidence == "none"
