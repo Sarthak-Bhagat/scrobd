@@ -34,6 +34,9 @@ class Resolution:
         if self.kind == "movie" and (self.season is not None or self.episode is not None):
             msg = "a movie carries no season or episode"
             raise ValueError(msg)
+        if self.kind == "unknown" and (self.season is not None or self.episode is not None):
+            msg = "an unknown identity carries no season or episode"
+            raise ValueError(msg)
 
     @property
     def is_actionable(self) -> bool:

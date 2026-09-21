@@ -29,6 +29,21 @@ def test_falls_through_to_the_index():
     assert r.ids == {"tvdb": 555}
 
 
+def test_tier1_wins_and_never_consults_the_alias_table(monkeypatch):
+    """The mirror of tier 0's guard: an index hit must not fall through to tier 2."""
+    index.save(index.build(
+        [{"id": 1, "title": "Untagged Show", "tvdbId": 555,
+          "path": "/m/TV_Shows/Untagged Show (2020)"}], []))
+
+    def explode(*_a, **_k):
+        msg = "tier 2 must not run when the index answers"
+        raise AssertionError(msg)
+    monkeypatch.setattr(aliases, "lookup", explode)
+    r = resolver.resolve("/m/TV_Shows/Untagged Show (2020)/Season 01/ep - S01E03 - x.mkv")
+    assert r.source == "index"
+    assert r.confidence == "exact"
+
+
 def test_falls_through_to_an_alias():
     aliases.remember("Sideload", {"tvdb": 77}, "episode", "Sideload")
     r = resolver.resolve("/m/Other/Sideload/Season 01/x - S01E09 - y.mkv")

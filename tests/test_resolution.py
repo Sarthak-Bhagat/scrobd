@@ -45,3 +45,9 @@ def test_episode_requires_season_and_episode():
 def test_movie_must_not_carry_episode_numbers():
     with pytest.raises(ValueError, match="movie"):
         make(kind="movie", season=1, episode=1)
+
+
+def test_unknown_must_not_carry_episode_numbers():
+    """`unknown` means nothing was identified; a season number would be a half-answer."""
+    with pytest.raises(ValueError, match="unknown identity"):
+        make(kind="unknown", season=5, episode=3)

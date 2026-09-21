@@ -14,9 +14,9 @@ Confidence is `high`, not `exact`: a human said so rather than *arr, which is
 worth distinguishing when auditing later.
 """
 
-import json
 from pathlib import Path
 
+from ._store import read_table, write_atomic
 from .paths import data_dir
 from .resolution import UNKNOWN, Resolution
 from .tier0 import ABS_RE, SE_RE
@@ -26,27 +26,21 @@ def _file() -> Path:
     return data_dir() / "aliases.json"
 
 
-def table() -> dict:
+def load() -> dict:
     """Every alias taught so far, keyed by folder. Read fresh every call."""
-    try:
-        return json.loads(_file().read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return read_table(_file(), {})
 
 
 def remember(folder: str, ids: dict, kind: str, title: str) -> None:
     """Teach the table one folder's answer, atomically."""
-    t = table()
+    t = load()
     t[folder] = {"ids": ids, "kind": kind, "title": title}
-    p = _file()
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(t, indent=1))
-    tmp.replace(p)          # atomic: the daemon may be reading
+    write_atomic(_file(), t)    # atomic: the daemon may be reading
 
 
 def lookup(path: str) -> Resolution:
     """Identify a file by walking its ancestor directories against the alias table."""
-    t = table()
+    t = load()
     stem = Path(path).stem
     for part in reversed(Path(path).parent.parts):
         entry = t.get(part)

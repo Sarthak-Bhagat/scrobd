@@ -59,3 +59,23 @@ def test_index_from_json(tmp_path, capsys):
     rc = cli.main(["index", "--from-json", str(s), str(m)])
     assert rc == 0
     assert "1 series" in capsys.readouterr().out
+
+
+def test_index_with_a_missing_file_is_a_usage_error(tmp_path, capsys):
+    """A bad path is a usage error, not a traceback -- same exit code as `review`'s."""
+    missing = str(tmp_path / "nope.json")
+    rc = cli.main(["index", "--from-json", missing, missing])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "cannot read" in err
+    assert "Traceback" not in err
+
+
+def test_index_with_malformed_json_is_a_usage_error(tmp_path, capsys):
+    s = tmp_path / "s.json"
+    s.write_text("{not json")
+    m = tmp_path / "m.json"
+    m.write_text("[]")
+    rc = cli.main(["index", "--from-json", str(s), str(m)])
+    assert rc == 2
+    assert "not valid JSON" in capsys.readouterr().err

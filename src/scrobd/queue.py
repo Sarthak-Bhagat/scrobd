@@ -9,10 +9,10 @@ question, not twelve. `seen` counts how many files hit it, which is the honest
 measure of how much a single answer is worth.
 """
 
-import json
 import re
 from pathlib import Path
 
+from ._store import read_table, write_atomic
 from .paths import state_dir
 
 # Sonarr's own folder formats: seasonFolderFormat is "Season {season:00}" and
@@ -27,17 +27,11 @@ def _file() -> Path:
 
 
 def _load() -> dict:
-    try:
-        return json.loads(_file().read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return read_table(_file(), {})
 
 
 def _save(table: dict) -> None:
-    p = _file()
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(table, indent=1))
-    tmp.replace(p)          # atomic: the review command may be reading
+    write_atomic(_file(), table)    # atomic: the review command may be reading
 
 
 def _folder_key(path: str) -> str:

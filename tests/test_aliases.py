@@ -28,6 +28,13 @@ def test_future_seasons_inherit_too():
     assert r.season == 5
 
 
+def test_episode_numbers_still_come_from_the_filename():
+    """The alias identifies the series; only the filename says which episode."""
+    aliases.remember("Some Sideloaded Show", {"tvdb": 999}, "episode", "Some Sideloaded Show")
+    r = aliases.lookup("/x/Some Sideloaded Show/Season 02/x.mkv")
+    assert r.confidence == "none"
+
+
 def test_unknown_folder_is_unresolved():
     assert aliases.lookup("/x/Never Seen/Season 01/x - S01E01 - t.mkv").confidence == "none"
 

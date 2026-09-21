@@ -64,10 +64,16 @@ def _cmd_review(answer: str | None, tvdb: int | None, imdb: str | None) -> int:
 
 def _cmd_index(series_path: str, movies_path: str) -> int:
     """Rebuild the local index from Sonarr/Radarr JSON exports."""
-    idx = index.build(
-        json.loads(Path(series_path).read_text()),
-        json.loads(Path(movies_path).read_text()),
-    )
+    try:
+        series = json.loads(Path(series_path).read_text())
+        movies = json.loads(Path(movies_path).read_text())
+    except OSError as exc:
+        print(f"cannot read the export: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"export is not valid JSON: {exc}", file=sys.stderr)
+        return 2
+    idx = index.build(series, movies)
     index.save(idx)
     print(f"indexed {len(idx['series'])} series, {len(idx['movies'])} movies")
     return 0

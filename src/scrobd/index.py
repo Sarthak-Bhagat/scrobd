@@ -8,9 +8,9 @@ Keyed on the folder, because every episode of a series shares one and the
 filename may have been renamed by hand.
 """
 
-import json
 from pathlib import Path
 
+from ._store import read_table, write_atomic
 from .paths import data_dir
 from .resolution import UNKNOWN, Resolution
 from .tier0 import ABS_RE, SE_RE
@@ -47,19 +47,13 @@ def _file() -> Path:
 def save(idx: dict) -> Path:
     """Write the index to disk atomically and return the path written."""
     p = _file()
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(idx, indent=1))
-    tmp.replace(p)          # atomic: the daemon may be reading
+    write_atomic(p, idx)    # atomic: the daemon may be reading
     return p
 
 
 def load() -> dict:
     """Read the index from disk, degrading to empty on missing or corrupt data."""
-    p = _file()
-    try:
-        return json.loads(p.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"series": {}, "movies": {}}
+    return read_table(_file(), {"series": {}, "movies": {}})
 
 
 def lookup(idx: dict, path: str) -> Resolution:
