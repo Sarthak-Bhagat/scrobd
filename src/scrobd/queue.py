@@ -21,6 +21,9 @@ from .paths import state_dir
 # season folder -- and missed "Specials", which collided every show's specials.
 _SEASON_DIR = re.compile(r"season\s*\d+|specials", re.IGNORECASE)
 
+# The shape `add` writes. Anything else in the file is not an entry.
+_ROW_KEYS = frozenset({"folder", "title", "example", "seen"})
+
 
 def _file() -> Path:
     return state_dir() / "review.json"
@@ -40,30 +43,53 @@ def _folder_key(path: str) -> str:
     return parent.parent.name if _SEASON_DIR.fullmatch(parent.name) else parent.name
 
 
+def _is_row(entry: object) -> bool:
+    """Whether a value read back off disk is an entry this module wrote.
+
+    A row that is not one is skipped everywhere rather than raised on: a queue
+    the `review` command cannot open is a queue whose contents are lost, which
+    is the same failure as never queuing the file. `count` and `pending` agree
+    on this predicate so the count can never promise a row the listing will not
+    show -- `len()` of the raw table once counted the three elements of a `[]`
+    that had been written over the file.
+    """
+    return (isinstance(entry, dict) and entry.keys() >= _ROW_KEYS
+            and isinstance(entry["seen"], int))
+
+
 def add(path: str, title: str) -> None:
     """Record one file the resolver could not identify, keyed by series folder."""
     table = _load()
     folder = _folder_key(path)
-    entry = table.setdefault(
-        folder,
-        {"folder": folder, "title": title, "example": path, "seen": 0},
-    )
+    entry = table.get(folder)
+    if not _is_row(entry):
+        entry = {"folder": folder, "title": title, "example": path, "seen": 0}
+        table[folder] = entry       # a malformed row is replaced, not accumulated onto
     entry["seen"] += 1
     _save(table)
 
 
 def pending() -> list[dict]:
     """Return queued entries, most-repeated question first."""
-    return sorted(_load().values(), key=lambda e: -e["seen"])
+    return sorted((e for e in _load().values() if _is_row(e)), key=lambda e: -e["seen"])
 
 
 def count() -> int:
     """Return how many series are currently queued."""
-    return len(_load())
+    return sum(1 for e in _load().values() if _is_row(e))
 
 
-def resolve_entry(folder: str) -> None:
-    """Remove folder from the queue. A no-op if it was never queued."""
+def resolve_entry(folder: str) -> bool:
+    """Remove *folder* from the queue; return whether a queued entry was actually removed.
+
+    The caller needs the answer. `scrobd review --answer "Mystery Show "` matched
+    nothing on the trailing space and still reported success, leaving the entry
+    queued forever and an alias under a key no lookup will ever produce. Keys are
+    matched literally -- a typo is reported, never guessed at.
+    """
     table = _load()
-    if table.pop(folder, None) is not None:
-        _save(table)
+    if not _is_row(table.get(folder)):
+        return False                # nothing `pending()` would have listed
+    del table[folder]
+    _save(table)
+    return True

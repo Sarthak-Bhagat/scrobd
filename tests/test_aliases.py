@@ -55,3 +55,40 @@ def test_persists_across_processes():
 def test_corrupt_file_degrades_to_empty():
     (data_dir() / "aliases.json").write_text("{broken")
     assert aliases.lookup("/x/Anything/Season 01/x - S01E01 - t.mkv").confidence == "none"
+
+
+# --- audit 2026-09-21: `..` in the walk, wrong-shape JSON, malformed entries ---
+
+
+def test_a_cancelled_out_ancestor_does_not_match():
+    """The real directory here is /x/staging/incoming, which was never taught."""
+    aliases.remember("Some Sideloaded Show", {"tvdb": 999}, "episode", "S")
+    r = aliases.lookup("/x/Some Sideloaded Show/../staging/incoming/f - S01E01 - t.mkv")
+    assert r.confidence == "none"
+
+
+def test_a_dot_segment_does_not_stop_a_real_match():
+    aliases.remember("Some Sideloaded Show", {"tvdb": 999}, "episode", "S")
+    r = aliases.lookup("/x/./Some Sideloaded Show/Season 02/x - S02E07 - t.mkv")
+    assert r.ids == {"tvdb": 999}
+
+
+def test_a_resolution_is_not_an_absolute_number():
+    aliases.remember("Some Sideloaded Show", {"tvdb": 999}, "episode", "S")
+    r = aliases.lookup("/x/Some Sideloaded Show/Season 02/x - S02E07 - 1080 - t [WEBDL-1080p].mkv")
+    assert r.absolute is None
+
+
+def test_json_of_the_wrong_shape_degrades_to_empty():
+    """A list parses fine and then has no .get -- the exception escaped the whole resolver."""
+    (data_dir() / "aliases.json").write_text("[]")
+    assert aliases.lookup("/x/Anything/Season 01/x - S01E01 - t.mkv").confidence == "none"
+
+
+def test_a_malformed_entry_is_skipped_not_crashed_on():
+    (data_dir() / "aliases.json").write_text(
+        '{"Bad": "not an entry", "Worse": {"kind": "episode"}, '
+        '"Good": {"ids": {"tvdb": 5}, "kind": "episode", "title": "Good"}}')
+    assert aliases.lookup("/x/Bad/Season 01/x - S01E01 - t.mkv").confidence == "none"
+    assert aliases.lookup("/x/Worse/Season 01/x - S01E01 - t.mkv").confidence == "none"
+    assert aliases.lookup("/x/Good/Season 01/x - S01E01 - t.mkv").ids == {"tvdb": 5}

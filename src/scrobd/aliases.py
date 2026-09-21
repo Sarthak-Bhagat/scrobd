@@ -19,7 +19,7 @@ from pathlib import Path
 from ._store import read_table, write_atomic
 from .paths import data_dir
 from .resolution import UNKNOWN, Resolution
-from .tier0 import ABS_RE, SE_RE
+from .tier0 import SE_RE, absolute_from, ancestors
 
 
 def _file() -> Path:
@@ -38,24 +38,40 @@ def remember(folder: str, ids: dict, kind: str, title: str) -> None:
     write_atomic(_file(), t)    # atomic: the daemon may be reading
 
 
+def _row(table: dict, part: str) -> dict | None:
+    """One well-formed alias, or None.
+
+    The table is whatever is on disk, so nothing is assumed about a row's shape.
+    `ids` and `kind` are checked strictly -- they decide the answer, and an
+    unrecognised `kind` used to fall through to the episode branch silently.
+    `title` is display-only and defaulted. A bad row is skipped rather than
+    raised on, so one corrupt answer does not cost every other answer given.
+    """
+    entry = table.get(part)
+    if not (isinstance(entry, dict) and isinstance(entry.get("ids"), dict) and entry["ids"]):
+        return None
+    return entry if entry.get("kind") in ("episode", "movie") else None
+
+
 def lookup(path: str) -> Resolution:
     """Identify a file by walking its ancestor directories against the alias table."""
     t = load()
     stem = Path(path).stem
-    for part in reversed(Path(path).parent.parts):
-        entry = t.get(part)
-        if not entry:
+    for part in ancestors(path):
+        entry = _row(t, part)
+        if entry is None:
             continue
+        title = entry.get("title")
+        title = title if isinstance(title, str) else ""
         if entry["kind"] == "movie":
             return Resolution(kind="movie", ids=dict(entry["ids"]), season=None,
-                              episode=None, absolute=None, title=entry["title"],
+                              episode=None, absolute=None, title=title,
                               confidence="high", source="alias")
         se = SE_RE.search(stem)
         if not se:
             return UNKNOWN
-        abs_m = ABS_RE.search(stem)
         return Resolution(kind="episode", ids=dict(entry["ids"]),
                           season=int(se.group(1)), episode=int(se.group(2)),
-                          absolute=int(abs_m.group(1)) if abs_m else None,
-                          title=entry["title"], confidence="high", source="alias")
+                          absolute=absolute_from(stem),
+                          title=title, confidence="high", source="alias")
     return UNKNOWN

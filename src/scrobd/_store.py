@@ -21,11 +21,20 @@ from pathlib import Path
 
 
 def read_table(p: Path, default: dict) -> dict:
-    """Read the JSON table at *p*, degrading to *default* if missing or corrupt."""
+    """Read the JSON table at *p*, degrading to *default* if missing, corrupt or not a table.
+
+    "Corrupt" includes valid JSON of the wrong shape. `[]` parses cleanly and
+    then has no `.get`, and that AttributeError escaped all the way past
+    `cli._cmd_resolve` -- so the file was neither identified, nor sent, nor
+    queued. Silently dropping a file is the one failure this project exists to
+    prevent, and it is not worth distinguishing a half-written file from a
+    hand-edited one to preserve it.
+    """
     try:
-        return json.loads(p.read_text())
+        table = json.loads(p.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return default
+    return table if isinstance(table, dict) else default
 
 
 def write_atomic(p: Path, data: dict) -> None:

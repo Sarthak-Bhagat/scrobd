@@ -106,3 +106,44 @@ def test_no_real_file_is_misclassified():
             assert r.episode is not None, n
         elif r.kind == "movie":
             assert "imdb" in r.ids or "tmdb" in r.ids, n
+
+
+# --- audit 2026-09-21: the first tag wins, and `absolute` is not any bare number ---
+
+
+def test_the_first_id_tag_wins_not_the_last():
+    """Sonarr writes the real tag right after the series title; later ones are episode text."""
+    r = parse("Show [tvdbid-111] - S01E01 - A Tribute to [tvdbid-999].mkv")
+    assert r.ids == {"tvdb": 111}
+    assert r.confidence == "exact"
+
+
+def test_the_first_id_tag_in_the_folder_fallback_wins_too():
+    """The series folder is the shallowest tagged ancestor, so the earliest match wins."""
+    r = parse("/m/TV_Shows/Show (2020) [tvdbid-111]/Season 01/Decoy [tvdbid-999]/"
+              "ep - S01E01 - t.mkv")
+    assert r.ids == {"tvdb": 111}
+
+
+def test_a_resolution_is_not_an_absolute_number():
+    """`[WEBRip-1080p]` contains 1080; a sink keying off absolute would scrobble episode 1080."""
+    r = parse("Show (2020) [tvdbid-1] - S01E05 - 1080 - Title [WEBRip-1080p].mkv")
+    assert r.absolute is None
+    assert (r.season, r.episode) == (1, 5)
+
+
+def test_a_year_is_not_an_absolute_number():
+    r = parse("Show (2020) [tvdbid-1] - S01E05 - 2024 - Title [WEBDL-1080p].mkv")
+    assert r.absolute is None
+
+
+def test_a_4k_resolution_is_not_an_absolute_number():
+    r = parse("Show (2020) [tvdbid-1] - S01E05 - 2160 - Title [WEBDL-2160p].mkv")
+    assert r.absolute is None
+
+
+def test_a_real_absolute_number_still_survives_a_quality_tag():
+    """The heuristic must not cost the library its 33 genuine absolute numbers."""
+    r = parse("Nukitashi THE ANIMATION (2025) [tvdbid-445390] - S01E05 - 005 - "
+              "Anti-Copulation Front [WEBRip-1080p] [EMBER].mkv")
+    assert r.absolute == 5

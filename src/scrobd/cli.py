@@ -29,7 +29,9 @@ def _describe(r: Resolution) -> str:
 def _cmd_resolve(path: str) -> int:
     """Identify one file; queue it for review if it cannot be identified."""
     r = resolve_one(path)
-    if r.confidence == "none":
+    if not r.is_actionable:
+        # `is_actionable`, not `confidence == "none"`. Tier 3 returns `low`, and
+        # the day it lands a `none` test would print a guess and exit 0.
         queue.add(path, r.title or path)
         print(f"could not identify: {path}")
         print("  queued for review -- run `scrobd review`")
@@ -44,10 +46,16 @@ def _cmd_review(answer: str | None, tvdb: int | None, imdb: str | None) -> int:
         if not (tvdb or imdb):
             print("give an id: --tvdb N or --imdb ttNNNNN", file=sys.stderr)
             return 2
+        # Clear the queue first. If the folder was never queued, the alias would
+        # go in under a key no lookup can ever produce, and the entry would stay
+        # queued forever while the command reported success.
+        if not queue.resolve_entry(answer):
+            print(f"nothing queued under {answer!r} -- folder names are matched "
+                  "literally; `scrobd review` lists them", file=sys.stderr)
+            return 1
         ids = {"tvdb": tvdb} if tvdb else {"imdb": imdb}
         kind = "episode" if tvdb else "movie"
         aliases.remember(answer, ids, kind, answer)
-        queue.resolve_entry(answer)
         print(f"remembered {answer} -> {ids}")
         return 0
 

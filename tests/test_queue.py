@@ -65,3 +65,40 @@ def test_specials_key_on_the_series_not_the_specials_folder():
 def test_a_file_directly_in_its_series_folder():
     queue.add("/m/TV/Unknown Show/x - S01E01 - t.mkv", "Unknown Show")
     assert queue.pending()[0]["folder"] == "Unknown Show"
+
+
+# --- audit 2026-09-21: wrong-shape JSON must not invent or hide entries ---
+
+
+def test_json_of_the_wrong_shape_reports_no_phantom_entries():
+    """`len()` of a parsed list counted rows that are not queue entries."""
+    (state_dir() / "review.json").write_text("[1, 2, 3]")
+    assert queue.count() == 0
+    assert queue.pending() == []
+
+
+def test_a_queue_of_the_wrong_shape_still_accepts_a_new_entry():
+    (state_dir() / "review.json").write_text('["nonsense"]')
+    queue.add("/m/X/Season 01/x - S01E01 - t.mkv", "X")
+    assert queue.count() == 1
+
+
+def test_a_malformed_entry_is_not_counted_and_does_not_break_the_listing():
+    (state_dir() / "review.json").write_text(
+        '{"Bad": "not an entry", '
+        '"Good": {"folder": "Good", "title": "G", "example": "/m/Good/x.mkv", "seen": 2}}')
+    assert queue.count() == 1
+    assert [e["folder"] for e in queue.pending()] == ["Good"]
+
+
+def test_adding_over_a_malformed_entry_replaces_it():
+    (state_dir() / "review.json").write_text('{"X": "not an entry"}')
+    queue.add("/m/X/Season 01/x - S01E01 - t.mkv", "X")
+    assert queue.pending()[0]["seen"] == 1
+
+
+def test_resolve_entry_reports_whether_it_removed_anything():
+    queue.add("/m/Unknown Show/Season 01/x - S01E01 - t.mkv", "Unknown Show")
+    assert queue.resolve_entry("Unknown Show") is True
+    assert queue.resolve_entry("Unknown Show") is False
+    assert queue.resolve_entry("Unknown Show ") is False

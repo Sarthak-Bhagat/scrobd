@@ -4,7 +4,9 @@ import json
 
 import pytest
 
-from scrobd import cli, queue
+from scrobd import aliases, cli, queue
+from scrobd.paths import data_dir
+from scrobd.resolution import Resolution
 
 
 @pytest.fixture(autouse=True)
@@ -79,3 +81,41 @@ def test_index_with_malformed_json_is_a_usage_error(tmp_path, capsys):
     rc = cli.main(["index", "--from-json", str(s), str(m)])
     assert rc == 2
     assert "not valid JSON" in capsys.readouterr().err
+
+
+# --- audit 2026-09-21: an answer that matched nothing, and low-confidence guesses ---
+
+
+def test_review_answer_that_matches_nothing_fails_loudly(capsys):
+    """A trailing space made a dead alias key and still reported success."""
+    cli.main(["resolve", "/m/Mystery Show/Season 01/x - S01E01 - t.mkv"])
+    rc = cli.main(["review", "--answer", "Mystery Show ", "--tvdb", "4242"])
+    assert rc != 0
+    assert "Mystery Show " in capsys.readouterr().err
+    assert queue.count() == 1
+
+
+def test_an_answer_that_matched_nothing_writes_no_alias():
+    """Writing under a key nothing will ever look up is how the queue silently leaked."""
+    cli.main(["resolve", "/m/Mystery Show/Season 01/x - S01E01 - t.mkv"])
+    cli.main(["review", "--answer", "Mystery Show ", "--tvdb", "4242"])
+    assert aliases.load() == {}
+
+
+def test_resolve_queues_a_low_confidence_guess_rather_than_announcing_it(monkeypatch, capsys):
+    """Tier 3 returns `low`. It must reach the queue, never a sink and never exit 0."""
+    guess = Resolution(kind="episode", ids={"tvdb": 1}, season=1, episode=1, absolute=None,
+                       title="Guessed Show", confidence="low", source="search")
+    monkeypatch.setattr(cli, "resolve_one", lambda _path: guess)
+    rc = cli.main(["resolve", "/m/Guessed Show/Season 01/x - S01E01 - t.mkv"])
+    assert rc == 1
+    assert "could not identify" in capsys.readouterr().out.lower()
+    assert queue.count() == 1
+
+
+def test_a_wrong_shape_alias_file_does_not_drop_the_file_on_the_floor():
+    """The escape path: aliases.lookup raised past _cmd_resolve, so queue.add never ran."""
+    (data_dir() / "aliases.json").write_text("[]")
+    rc = cli.main(["resolve", "/m/Mystery Show/Season 01/x - S01E01 - t.mkv"])
+    assert rc == 1
+    assert queue.count() == 1

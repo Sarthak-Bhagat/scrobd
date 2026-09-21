@@ -13,7 +13,7 @@ from pathlib import Path
 from ._store import read_table, write_atomic
 from .paths import data_dir
 from .resolution import UNKNOWN, Resolution
-from .tier0 import ABS_RE, SE_RE
+from .tier0 import SE_RE, absolute_from, ancestors
 
 
 def build(series: list, movies: list) -> dict:
@@ -56,23 +56,43 @@ def load() -> dict:
     return read_table(_file(), {"series": {}, "movies": {}})
 
 
+def _row(idx: dict, section: str, part: str) -> dict | None:
+    """One well-formed row of *section*, or None.
+
+    The file on disk is whatever was last written there, so neither the section
+    nor the row is assumed to be the shape `build` emits. `ids` is checked
+    strictly because it is the answer; `title` is display-only and defaulted.
+    A bad row is skipped, not raised on -- one corrupt series must not make
+    every other series in the index unresolvable.
+    """
+    rows = idx.get(section)
+    entry = rows.get(part) if isinstance(rows, dict) else None
+    if not (isinstance(entry, dict) and isinstance(entry.get("ids"), dict) and entry["ids"]):
+        return None
+    return entry
+
+
+def _title(entry: dict) -> str:
+    title = entry.get("title")
+    return title if isinstance(title, str) else ""
+
+
 def lookup(idx: dict, path: str) -> Resolution:
     """Identify a file by walking its ancestor directories against the index."""
     stem = Path(path).stem
-    for part in reversed(Path(path).parent.parts):
-        if part in idx.get("series", {}):
+    for part in ancestors(path):
+        entry = _row(idx, "series", part)
+        if entry is not None:
             se = SE_RE.search(stem)
             if not se:
                 return UNKNOWN      # the index names the series, not the episode
-            entry = idx["series"][part]
-            abs_m = ABS_RE.search(stem)
             return Resolution(kind="episode", ids=dict(entry["ids"]),
                               season=int(se.group(1)), episode=int(se.group(2)),
-                              absolute=int(abs_m.group(1)) if abs_m else None,
-                              title=entry["title"], confidence="exact", source="index")
-        if part in idx.get("movies", {}):
-            entry = idx["movies"][part]
+                              absolute=absolute_from(stem),
+                              title=_title(entry), confidence="exact", source="index")
+        entry = _row(idx, "movies", part)
+        if entry is not None:
             return Resolution(kind="movie", ids=dict(entry["ids"]), season=None,
-                              episode=None, absolute=None, title=entry["title"],
+                              episode=None, absolute=None, title=_title(entry),
                               confidence="exact", source="index")
     return UNKNOWN
