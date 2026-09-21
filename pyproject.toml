@@ -46,3 +46,10 @@ ignore = [
   "INP001",   # tests/ is deliberately not a package. The shadowing this rule guards
               # against needs two test modules sharing a basename; all ours are unique.
 ]
+"src/scrobd/cli.py" = [
+  "T201",     # ruff's own docs for this rule: print "used to produce output as a part
+              # of a command-line interface program are not typically a problem". The
+              # rule guards library code, where printing hides output from a caller.
+              # This is the entry point; printing is the interface. sys.stdout.write
+              # would satisfy the checker while reading worse and hand-managing newlines.
+]
