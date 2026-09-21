@@ -57,8 +57,14 @@ def _is_row(entry: object) -> bool:
             and isinstance(entry["seen"], int))
 
 
-def add(path: str, title: str) -> None:
-    """Record one file the resolver could not identify, keyed by series folder."""
+def add(path: str, title: str) -> dict:
+    """Record one file the resolver could not identify, keyed by series folder.
+
+    Returns the entry as it now stands. A caller that logs the queueing needs
+    the folder key the file landed under and how many files are now waiting on
+    that one answer, and reading the table back to learn them would be a second
+    disk read for facts this call already has in hand.
+    """
     table = _load()
     folder = _folder_key(path)
     entry = table.get(folder)
@@ -67,6 +73,7 @@ def add(path: str, title: str) -> None:
         table[folder] = entry       # a malformed row is replaced, not accumulated onto
     entry["seen"] += 1
     _save(table)
+    return entry
 
 
 def pending() -> list[dict]:

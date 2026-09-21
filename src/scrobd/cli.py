@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import aliases, index, queue
+from . import _log, aliases, index, queue
 from .resolution import Resolution
 from .resolver import resolve as resolve_one
 
@@ -29,10 +29,16 @@ def _describe(r: Resolution) -> str:
 def _cmd_resolve(path: str) -> int:
     """Identify one file; queue it for review if it cannot be identified."""
     r = resolve_one(path)
+    # Logged here rather than in `resolve`, which must stay free of I/O -- see
+    # `_log`'s docstring. `source` records which tier actually answered.
+    _log.event("resolve", path=path, source=r.source, confidence=r.confidence,
+               ids=r.ids, kind=r.kind, season=r.season, episode=r.episode,
+               absolute=r.absolute, title=r.title)
     if not r.is_actionable:
         # `is_actionable`, not `confidence == "none"`. Tier 3 returns `low`, and
         # the day it lands a `none` test would print a guess and exit 0.
-        queue.add(path, r.title or path)
+        entry = queue.add(path, r.title or path)
+        _log.event("queued", path=path, folder=entry["folder"], seen=entry["seen"])
         print(f"could not identify: {path}")
         print("  queued for review -- run `scrobd review`")
         return 1
@@ -49,13 +55,19 @@ def _cmd_review(answer: str | None, tvdb: int | None, imdb: str | None) -> int:
         # Clear the queue first. If the folder was never queued, the alias would
         # go in under a key no lookup can ever produce, and the entry would stay
         # queued forever while the command reported success.
-        if not queue.resolve_entry(answer):
+        cleared = queue.resolve_entry(answer)
+        if not cleared:
             print(f"nothing queued under {answer!r} -- folder names are matched "
                   "literally; `scrobd review` lists them", file=sys.stderr)
             return 1
         ids = {"tvdb": tvdb} if tvdb else {"imdb": imdb}
         kind = "episode" if tvdb else "movie"
         aliases.remember(answer, ids, kind, answer)
+        # `cleared` is True here by construction -- the guard above returns
+        # otherwise. Recorded rather than assumed: that ordering is itself a fix
+        # (audit 2026-09-21), and a post-mortem should be able to see which
+        # order was in force rather than infer it from the version tag.
+        _log.event("alias_taught", folder=answer, ids=ids, kind=kind, cleared=cleared)
         print(f"remembered {answer} -> {ids}")
         return 0
 
@@ -83,6 +95,7 @@ def _cmd_index(series_path: str, movies_path: str) -> int:
         return 2
     idx = index.build(series, movies)
     index.save(idx)
+    _log.event("index_rebuilt", series=len(idx["series"]), movies=len(idx["movies"]))
     print(f"indexed {len(idx['series'])} series, {len(idx['movies'])} movies")
     return 0
 
