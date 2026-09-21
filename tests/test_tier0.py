@@ -2,9 +2,19 @@
 
 from pathlib import Path
 
+import pytest
+
 from scrobd.tier0 import parse
 
+# 222 filenames captured from the real library on 2026-09-20. It lives under docs/,
+# which is deliberately not committed -- it is a list of everything its owner watches.
+# These three tests are the strongest evidence tier 0 works, so they skip loudly rather
+# than silently pass when the corpus is absent on a fresh clone.
 CORPUS = Path(__file__).parent.parent / "docs" / "superpowers" / "library-filenames.txt"
+needs_corpus = pytest.mark.skipif(
+    not CORPUS.exists(),
+    reason=f"real-library corpus not present at {CORPUS} (not committed; see README)",
+)
 
 
 def test_standard_episode():
@@ -82,6 +92,7 @@ KNOWN_UNTAGGED = {"output_2k.mkv",
                    "[WEBDL-1080p][AAC 2.0][KO][h264]-DUSKLiGHT.mkv")}
 
 
+@needs_corpus
 def test_every_tagged_library_file_resolves_exactly():
     """The whole point of the rename. If this regresses, tier 0 has stopped working."""
     names = [n for n in CORPUS.read_text().splitlines() if n.strip()]
@@ -90,12 +101,14 @@ def test_every_tagged_library_file_resolves_exactly():
     assert failures == [], f"{len(failures)} of {len(names)} did not resolve: {failures[:5]}"
 
 
+@needs_corpus
 def test_the_untagged_files_are_still_exactly_the_two_we_know_about():
     names = [n for n in CORPUS.read_text().splitlines() if n.strip()]
     untagged = {n for n in names if parse(n).confidence != "exact"}
     assert untagged == KNOWN_UNTAGGED, f"library drifted: {untagged ^ KNOWN_UNTAGGED}"
 
 
+@needs_corpus
 def test_no_real_file_is_misclassified():
     names = [n for n in CORPUS.read_text().splitlines() if n.strip()]
     for n in names:

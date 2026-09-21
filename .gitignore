@@ -5,3 +5,8 @@ dist/
 build/
 *.egg-info/
 .venv/
+
+# Not published for now. docs/superpowers/library-filenames.txt is a list of every
+# file in the owner's media library; the rest is design and execution history that
+# lives locally. The three tier-0 corpus tests skip when it is absent.
+docs/
