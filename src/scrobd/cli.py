@@ -4,16 +4,21 @@ scrobd resolve <path>                       what is this file?
 scrobd review                               what could I not identify?
 scrobd review --answer <folder> --tvdb N    teach it, once, for the whole series
 scrobd index --from-json <series> <movies>  rebuild the local index
+scrobd watch [--socket PATH]                record a session per file mpv plays
 """
 
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
-from . import _log, aliases, index, queue
+from . import _log, aliases, index, queue, sessions
+from .mpv import MpvSocket, MpvUnavailableError
 from .resolution import Resolution
 from .resolver import resolve as resolve_one
+from .session import Accumulator, Session
 
 
 def _describe(r: Resolution) -> str:
@@ -100,6 +105,83 @@ def _cmd_index(series_path: str, movies_path: str) -> int:
     return 0
 
 
+def _record(session: Session | None) -> bool:
+    """Resolve and record one finished session, queueing it if it cannot be identified.
+
+    Return False if the session log could not be written. The row then goes to
+    stderr in full, so the session survives in the terminal or the journal, and
+    the caller stops: a log that cannot be written now will almost certainly not
+    be writable for the next file either, and a watcher left running looks like
+    one that is recording.
+    """
+    if session is None:
+        return True
+    now = time.time()
+    r = resolve_one(session.path)
+    row = sessions.row(session, r, now)
+    try:
+        written = sessions.record(session, r, now)
+    except OSError as exc:
+        print(f"cannot write the session log: {exc}", file=sys.stderr)
+        print("  this session was not recorded; its row follows", file=sys.stderr)
+        print(json.dumps(row), file=sys.stderr)
+        return False
+    # `written` is False for a replay deduplicated inside the window, which the
+    # post-mortem log should still show was seen.
+    _log.event("session", **row, written=written)
+    if not r.is_actionable:
+        # Same rule as `_cmd_resolve`: `is_actionable`, not `confidence == "none"`.
+        entry = queue.add(session.path, r.title or session.path)
+        _log.event("queued", path=session.path, folder=entry["folder"], seen=entry["seen"])
+    return True
+
+
+def _default_socket() -> str | None:
+    """Return `$XDG_RUNTIME_DIR/mpvsocket`, or None if that directory is not set.
+
+    Read when the command runs, not at import, like every path in `scrobd.paths`.
+    The runtime directory is the user's own (0700), where mpv.conf's
+    `input-ipc-server` points. There is deliberately no fallback to /tmp: a
+    shared, world-writable path is one another user can bind first, and guessing
+    one would watch the wrong place without saying so.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    return str(Path(runtime) / "mpvsocket") if runtime else None
+
+
+def _cmd_watch(socket_path: str | None) -> int:
+    """Record a session for every file mpv plays, until mpv exits or Ctrl-C."""
+    socket_path = socket_path or _default_socket()
+    if socket_path is None:
+        print("XDG_RUNTIME_DIR is unset, so there is no default mpv socket -- "
+              "pass --socket PATH", file=sys.stderr)
+        return 1
+    mpv = MpvSocket(socket_path)
+    try:
+        mpv.connect()
+    except MpvUnavailableError as exc:
+        print(exc, file=sys.stderr)     # it already names the likely cause
+        return 1
+    acc = Accumulator()
+    try:
+        for e in mpv.events():
+            # `.get`: a property mpv cannot report yet may arrive with no `data`.
+            acc.feed(e["name"], e.get("data"), time.time())
+            # Take after every feed: the accumulator holds one finished session,
+            # and one left untaken is overwritten by the next without a word.
+            if not _record(acc.take()):
+                return 1
+    except KeyboardInterrupt:
+        pass        # Ctrl-C ends the watch exactly as mpv exiting does: below
+    finally:
+        mpv.close()
+    # The file still open when the stream ended. mpv closing the socket and
+    # Ctrl-C both land here, and losing the session being watched to either one
+    # is the silent loss this tool exists to prevent.
+    acc.finish(time.time())
+    return 0 if _record(acc.take()) else 1
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="scrobd", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -116,6 +198,10 @@ def _build_parser() -> argparse.ArgumentParser:
     pi = sub.add_parser("index")
     pi.add_argument("--from-json", nargs=2, metavar=("SERIES", "MOVIES"), required=True)
 
+    pw = sub.add_parser("watch")
+    pw.add_argument("--socket", metavar="PATH",
+                    help="mpv's IPC socket (default: $XDG_RUNTIME_DIR/mpvsocket)")
+
     return p
 
 
@@ -130,6 +216,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "index":
         s, m = a.from_json
         return _cmd_index(s, m)
+    if a.cmd == "watch":
+        return _cmd_watch(a.socket)
     return 1
 
 
