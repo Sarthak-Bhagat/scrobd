@@ -1,0 +1,165 @@
+"""The local record of every session played, one JSON object per line.
+
+**Append-only.** A row is written once and never rewritten, which is why there
+is no `watched` field: whether a session counts as watched is derived at read
+time from `max_pos / duration`, so changing the threshold later reinterprets
+history instead of requiring it to be edited. A 30% abandon is a row like any
+other. No sink can hold it; this log can. `duration` and `max_pos` are written
+as `null` when mpv never reported them -- a missing number is a gap, a guessed
+one is a lie.
+
+**Nothing is discarded for being unidentified.** A session the resolver could
+not name is still a row, with empty `ids` and confidence `"none"`, so the watch
+survives until the question is answered.
+
+**The dedupe window is measured, not guessed.** Over 5,685 organic plays, the
+genuine rewatch rate is 2.22%, and 47% of apparent rewatches are the same
+episode logged twice inside a day. A repeat of the same identity within 24
+hours is therefore far more likely an artifact than a real second watch, and it
+does not become a second row. Past the window, a repeat is a rewatch and is kept.
+
+But that measurement counted *plays* -- completed scrobbles -- and this log
+records *sessions*, several of which can make up one play. Stop an episode at
+30% and finish it two hours later, and the second session is the same identity
+inside the window; dropping it would record a completed watch as an abandon.
+So the window removes duplicate plays, not resumes: a repeat inside it is
+dropped only if it adds no progress -- its `max_pos` reaches no further than
+the furthest already logged for that identity in the window. A session that
+reaches further is written. Collapsing several rows of one play into a single
+scrobble is the sink's job, later; a few extra rows cost nothing here.
+
+The identity compared is the full one: `ids`, `season` and `episode` together.
+A session with **no ids never dedupes**. Two unknowns are not the same thing
+just because both are unknown, and folding them would silently drop a watch.
+
+**A corrupt line costs one row, not the log** -- the same promise
+`_store.read_table` makes for whole-table files. `read` skips any line that is
+not a JSON object, and `record` starts a fresh line if the last write was cut
+off mid-line, so one torn write cannot take the next row down with it.
+
+No clock, like `session`: `now` is supplied by the caller, so tests drive the
+window directly instead of sleeping.
+"""
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+from .paths import state_dir
+from .resolution import Resolution
+from .session import Session
+
+# 24 hours. Measured over 5,685 organic plays: genuine rewatches are 2.22% of
+# them, and 47% of apparent rewatches are one episode logged twice inside a day.
+DEDUPE_WINDOW_S = 24 * 3600
+
+# Whole seconds and a `Z`, the spelling `_log` uses and `jq`'s `fromdateiso8601`
+# parses. Dropping the fraction moves a row's time by under a second, which a
+# 24-hour window cannot notice, and the file's own line order keeps sequence.
+_TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _file() -> Path:
+    return state_dir() / "sessions.jsonl"
+
+
+def _raw() -> bytes:
+    """Return the log's bytes, or nothing if no session has been recorded yet."""
+    try:
+        return _file().read_bytes()
+    except FileNotFoundError:
+        return b""
+
+
+def _rows(raw: bytes) -> list[dict]:
+    """Parse *raw* into rows, skipping every line that is not a JSON object.
+
+    Bytes, not text: one undecodable byte would otherwise fail the whole read,
+    where here it fails `json.loads` for its own line only. Valid JSON of the
+    wrong shape is skipped too -- `[]` parses cleanly and then has no `.get`.
+    """
+    rows = []
+    for line in raw.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:      # JSONDecodeError and UnicodeDecodeError both
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def read() -> list[dict]:
+    """Return every recorded session, oldest first."""
+    return _rows(_raw())
+
+
+def _recorded_at(row: dict) -> float | None:
+    """Return when *row* was recorded, or None if its `ts` cannot be read."""
+    ts = row.get("ts")
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts).timestamp()
+    except ValueError:
+        return None
+
+
+def _same_identity_in_window(row: dict, resolution: Resolution, now: float) -> bool:
+    """Whether *row* is the same identity as *resolution*, recorded inside the window."""
+    when = _recorded_at(row)
+    # Either side of `now`: a row stamped ahead of a clock that has since been
+    # set back is still within a day of this one, and one stamped far ahead
+    # must not suppress that identity until the clock catches up.
+    return (when is not None and abs(now - when) < DEDUPE_WINDOW_S
+            and row.get("ids") == resolution.ids
+            and row.get("season") == resolution.season
+            and row.get("episode") == resolution.episode)
+
+
+def _is_duplicate(session: Session, resolution: Resolution, now: float,
+                  rows: list[dict]) -> bool:
+    """Whether *session* repeats a play already logged inside the window and adds no progress.
+
+    A session with no position adds none. A logged row with no position sets no
+    bar, so it never blocks a session that has one.
+    """
+    if not resolution.ids:
+        return False            # two unknowns are not the same thing
+    prior = [row for row in rows if _same_identity_in_window(row, resolution, now)]
+    if not prior:
+        return False
+    if session.max_pos is None:
+        return True
+    reached = [row["max_pos"] for row in prior if isinstance(row.get("max_pos"), int | float)]
+    return bool(reached) and session.max_pos <= max(reached)
+
+
+def record(session: Session, resolution: Resolution, now: float) -> bool:
+    """Append *session* as *resolution*; return False if it was a duplicate and not written."""
+    raw = _raw()
+    if _is_duplicate(session, resolution, now, _rows(raw)):
+        return False
+    row = {
+        "ts": datetime.fromtimestamp(now, UTC).strftime(_TS_FORMAT),
+        "path": session.path,
+        "started_at": session.started_at,
+        "ended_at": session.ended_at,
+        "duration": session.duration,
+        "max_pos": session.max_pos,
+        "samples": session.samples,
+        "kind": resolution.kind,
+        "ids": resolution.ids,
+        "season": resolution.season,
+        "episode": resolution.episode,
+        "absolute": resolution.absolute,
+        "title": resolution.title,
+        "confidence": resolution.confidence,
+        "source": resolution.source,
+    }
+    line = json.dumps(row) + "\n"
+    if raw and not raw.endswith(b"\n"):
+        line = "\n" + line      # end the torn line, so it costs only itself
+    with _file().open("a", encoding="utf-8") as fh:
+        fh.write(line)
+    return True
