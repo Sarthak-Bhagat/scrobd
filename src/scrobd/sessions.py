@@ -135,12 +135,14 @@ def _is_duplicate(session: Session, resolution: Resolution, now: float,
     return bool(reached) and session.max_pos <= max(reached)
 
 
-def record(session: Session, resolution: Resolution, now: float) -> bool:
-    """Append *session* as *resolution*; return False if it was a duplicate and not written."""
-    raw = _raw()
-    if _is_duplicate(session, resolution, now, _rows(raw)):
-        return False
-    row = {
+def row(session: Session, resolution: Resolution, now: float) -> dict:
+    """Return the row `record` writes for *session* as *resolution*, recorded at *now*.
+
+    Public so that a caller reporting a session -- to the post-mortem log, or
+    to stderr when the write itself failed -- shows exactly what was written,
+    or would have been, without keeping a second copy of the field list.
+    """
+    return {
         "ts": datetime.fromtimestamp(now, UTC).strftime(_TS_FORMAT),
         "path": session.path,
         "started_at": session.started_at,
@@ -157,7 +159,14 @@ def record(session: Session, resolution: Resolution, now: float) -> bool:
         "confidence": resolution.confidence,
         "source": resolution.source,
     }
-    line = json.dumps(row) + "\n"
+
+
+def record(session: Session, resolution: Resolution, now: float) -> bool:
+    """Append *session* as *resolution*; return False if it was a duplicate and not written."""
+    raw = _raw()
+    if _is_duplicate(session, resolution, now, _rows(raw)):
+        return False
+    line = json.dumps(row(session, resolution, now)) + "\n"
     if raw and not raw.endswith(b"\n"):
         line = "\n" + line      # end the torn line, so it costs only itself
     with _file().open("a", encoding="utf-8") as fh:

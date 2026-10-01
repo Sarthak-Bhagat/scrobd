@@ -32,6 +32,12 @@ def test_a_session_is_appended():
     assert rows[0]["max_pos"] == 1300.0
 
 
+def test_row_is_exactly_the_line_record_writes():
+    """One builder, so a caller logging a session cannot drift from what was written."""
+    sessions.record(sess(), ep(), now=1000.0)
+    assert sessions.read() == [sessions.row(sess(), ep(), now=1000.0)]
+
+
 def test_watched_is_not_stored_as_a_flag():
     """It is derived from max_pos at read time, which keeps the log append-only."""
     sessions.record(sess(), ep(), now=1000.0)
