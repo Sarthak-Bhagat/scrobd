@@ -138,6 +138,35 @@ def test_a_file_mpv_reported_nothing_about_is_recorded_with_gaps(tmp_path):
     assert row["samples"] == 0
 
 
+def test_a_season_directory_between_episodes_is_recorded_but_not_queued(tmp_path):
+    """Lazy directory mode in mpv reports `Season 02` itself as a path before its episodes.
+
+    Unidentifiable, and queued it would ask about a show already identified.
+    Nothing was played -- mpv reported no duration and no position -- so it is
+    a row, with its gaps, and not a question.
+    """
+    season_two = "/m/Show (2020) [tvdbid-99]/Season 02"
+    rc = run_watch(tmp_path, [*play(SHOW.format(12), 1300.0),
+                              {"event": "property-change", "name": "path", "data": season_two},
+                              *play(f"{season_two}/x - S02E01 - t.mkv", 60.0)])
+    assert rc == 0
+    rows = sessions.read()
+    assert [(r["path"], r["episode"], r["max_pos"]) for r in rows] == [
+        (SHOW.format(12), 12, 1300.0), (season_two, None, None),
+        (f"{season_two}/x - S02E01 - t.mkv", 1, 60.0)]
+    assert queue.count() == 0
+
+
+def test_a_url_is_recorded_but_never_queued(tmp_path):
+    """The queue keys on a library folder; an answer for a host would name every URL on it."""
+    url = "https://www.youtube.com/watch?v=abc"
+    rc = run_watch(tmp_path, [*play(url, 30.0),
+                              {"event": "property-change", "name": "duration", "data": 212.0}])
+    assert rc == 0
+    assert [(r["path"], r["max_pos"]) for r in sessions.read()] == [(url, 30.0)]
+    assert queue.count() == 0
+
+
 def test_ctrl_c_records_the_session_being_watched(tmp_path, monkeypatch):
     """Losing the file you were watching because you pressed Ctrl-C is the loss to prevent."""
     stream = MpvSocket.events

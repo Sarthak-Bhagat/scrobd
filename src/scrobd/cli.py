@@ -109,6 +109,23 @@ def _cmd_index(series_path: str, movies_path: str) -> int:
     return 0
 
 
+def _worth_asking_about(session: Session) -> bool:
+    """Whether an unidentified *session* belongs in the review queue. Its row is kept either way.
+
+    Not a URL. The queue keys on a library folder, so a stream's question would
+    be keyed on a fragment of its address, and an answer taught for a host --
+    `www.youtube.com` -- would name every URL on it as that one title.
+
+    Not a session mpv reported neither a duration nor a position for: nothing
+    was played. Lazy directory mode reports `Season 02` as a path of its own
+    before its episodes, and queued, that directory asks about a show whose
+    episodes are identified on either side of it.
+    """
+    if "://" in session.path:
+        return False
+    return session.duration is not None or session.max_pos is not None
+
+
 def _record(session: Session | None) -> bool:
     """Resolve and record one finished session, queueing it if it cannot be identified.
 
@@ -135,7 +152,7 @@ def _record(session: Session | None) -> bool:
     # one `_log.event` stamps, on purpose: both mark this record, milliseconds
     # apart, and keeping the row's makes the log line the written row exactly.
     _log.event("session", **row, written=written)
-    if not r.is_actionable:
+    if not r.is_actionable and _worth_asking_about(session):
         # Same rule as `_cmd_resolve`: `is_actionable`, not `confidence == "none"`.
         entry = queue.add(session.path, r.title or session.path)
         _log.event("queued", path=session.path, folder=entry["folder"], seen=entry["seen"])
