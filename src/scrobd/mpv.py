@@ -102,11 +102,20 @@ class MpvSocket:
                 line, buf = buf.split(b"\n", 1)
                 if not line.strip():
                     continue
+                # mpv passes a filename's bytes through as they are, and a
+                # filename need not be UTF-8. Decoding with "replace" keeps the
+                # line -- and so the path change that ends the session before
+                # it -- at the cost of a U+FFFD per bad byte. Dropping the line
+                # instead would fold the next file's numbers into the previous
+                # session, and "surrogateescape" leaves lone surrogates that
+                # crash `print` when `scrobd review` lists the path.
                 try:
-                    msg = json.loads(line)
+                    msg = json.loads(line.decode("utf-8", "replace"))
                 except json.JSONDecodeError:
                     continue                          # never let one bad line end the stream
-                if msg.get("event") == "property-change" and "name" in msg:
+                # Valid JSON need not be an object: `[]` parses, then has no `.get`.
+                if (isinstance(msg, dict) and msg.get("event") == "property-change"
+                        and "name" in msg):
                     yield msg
 
     def close(self) -> None:

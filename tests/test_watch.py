@@ -41,7 +41,8 @@ def serve(path, lines, ready):
     with conn:
         conn.recv(4096)
         for line in lines:
-            conn.sendall((json.dumps(line) + "\n").encode())
+            # bytes go out verbatim: how a line that is not valid UTF-8 is staged
+            conn.sendall(line if isinstance(line, bytes) else (json.dumps(line) + "\n").encode())
     srv.close()
 
 
@@ -112,6 +113,19 @@ def test_every_file_in_one_run_is_its_own_session(tmp_path):
     rc = run_watch(tmp_path, play(SHOW.format(1), 1300.0) + play(SHOW.format(2), 420.0))
     assert rc == 0
     assert [(r["episode"], r["max_pos"]) for r in sessions.read()] == [(1, 1300.0), (2, 420.0)]
+
+
+def test_a_path_that_is_not_utf8_costs_neither_its_session_nor_the_one_before(tmp_path):
+    """A filename need not be UTF-8, and mpv passes its bytes through as they are."""
+    latin1 = (b'{"event": "property-change", "name": "path", '
+              b'"data": "/m/Caf\xe9 (2020) [tvdbid-77]/Season 01/x - S01E02 - t.mkv"}\n')
+    rc = run_watch(tmp_path, [*play(SHOW.format(1), 1300.0), latin1,
+                              {"event": "property-change", "name": "time-pos", "data": 300.0}])
+    assert rc == 0
+    rows = sessions.read()
+    assert [(r["ids"], r["episode"], r["max_pos"]) for r in rows] == [
+        ({"tvdb": 99}, 1, 1300.0), ({"tvdb": 77}, 2, 300.0)]
+    assert rows[1]["path"] == "/m/Caf\ufffd (2020) [tvdbid-77]/Season 01/x - S01E02 - t.mkv"
 
 
 def test_a_file_mpv_reported_nothing_about_is_recorded_with_gaps(tmp_path):

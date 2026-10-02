@@ -10,11 +10,12 @@ import pytest
 from scrobd.mpv import MpvSocket, MpvUnavailableError
 
 
-def fake_mpv(path: Path, script: list[dict | str], ready: threading.Event):
+def fake_mpv(path: Path, script: list[dict | str | bytes], ready: threading.Event):
     """Speak just enough of mpv's protocol to test against.
 
     A dict in *script* is sent as one complete JSON line. A str is sent
-    verbatim, which is how a line mpv truncated by exiting mid-write is staged.
+    verbatim, which is how a line mpv truncated by exiting mid-write is staged;
+    bytes are sent verbatim too, which is how a line that is not UTF-8 is.
     """
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(str(path))
@@ -24,6 +25,9 @@ def fake_mpv(path: Path, script: list[dict | str], ready: threading.Event):
     with conn:
         conn.recv(4096)                      # the observe_property commands
         for line in script:
+            if isinstance(line, bytes):
+                conn.sendall(line)
+                continue
             raw = line if isinstance(line, str) else json.dumps(line) + "\n"
             conn.sendall(raw.encode())
     srv.close()
@@ -109,3 +113,27 @@ def test_one_malformed_line_does_not_end_the_stream(mpv_at):
     with MpvSocket(str(path)) as m:
         got = [e["name"] for e in m.events()]
     assert got == ["path", "time-pos"]
+
+
+def test_valid_json_that_is_not_an_object_does_not_end_the_stream(mpv_at):
+    """`[]` parses cleanly and then has no `.get`."""
+    path = mpv_at([
+        {"event": "property-change", "name": "path", "data": "/m/a.mkv"},
+        "[]\n",
+        "5\n",
+        {"event": "property-change", "name": "time-pos", "data": 12.5},
+    ])
+    with MpvSocket(str(path)) as m:
+        got = [e["name"] for e in m.events()]
+    assert got == ["path", "time-pos"]
+
+
+def test_a_path_that_is_not_utf8_arrives_with_the_bad_byte_replaced(mpv_at):
+    """Replaced, not escaped: a lone surrogate would crash `print` when `review` lists it."""
+    path = mpv_at([
+        b'{"event": "property-change", "name": "path", "data": "/m/Caf\xe9.mkv"}\n',
+        {"event": "property-change", "name": "time-pos", "data": 12.5},
+    ])
+    with MpvSocket(str(path)) as m:
+        got = [(e["name"], e["data"]) for e in m.events()]
+    assert got == [("path", "/m/Caf\ufffd.mkv"), ("time-pos", 12.5)]
