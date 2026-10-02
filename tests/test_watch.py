@@ -1,6 +1,7 @@
 """`scrobd watch` end to end, against a fake mpv."""
 
 import json
+import signal
 import socket
 import threading
 
@@ -188,6 +189,77 @@ def test_the_help_names_the_default_socket(capsys):
     with pytest.raises(SystemExit):
         cli.main(["watch", "--help"])
     assert "$XDG_RUNTIME_DIR/mpvsocket" in capsys.readouterr().out
+
+
+STOP_SIGNALS = [signal.SIGINT]
+STOP_IDS = ["SIGINT"]
+
+
+def watch_through(tmp_path, lines):
+    """Run `run_watch`; fail the test, rather than abort pytest, if an interrupt escapes."""
+    try:
+        return run_watch(tmp_path, lines)
+    except KeyboardInterrupt:
+        pytest.fail("an interrupt escaped `watch` instead of ending it")
+
+
+def signal_while_resolving(monkeypatch, sig, path):
+    """Send *sig* while *path* is being recorded: taken and resolved, not yet written."""
+    real = cli.resolve_one
+
+    def resolve_then_signal(p):
+        r = real(p)
+        if p == path:
+            signal.raise_signal(sig)
+        return r
+
+    monkeypatch.setattr(cli, "resolve_one", resolve_then_signal)
+
+
+@pytest.mark.parametrize("sig", STOP_SIGNALS, ids=STOP_IDS)
+def test_a_signal_while_a_session_is_being_recorded_waits_for_the_write(
+        tmp_path, monkeypatch, sig):
+    """File 1 is in hand -- taken when file 2 opened -- so it is written before the watch stops."""
+    signal_while_resolving(monkeypatch, sig, SHOW.format(1))
+    rc = watch_through(tmp_path, play(SHOW.format(1), 1300.0) + play(SHOW.format(2), 420.0))
+    assert rc == 0
+    # The watch then stops at once, before file 2's position is read: file 2 is
+    # recorded as far as it got. Reading on to 420 would mean the signal was ignored.
+    assert [(r["episode"], r["max_pos"]) for r in sessions.read()] == [(1, 1300.0), (2, None)]
+
+
+def test_a_signal_while_the_final_session_is_being_recorded_waits_for_the_write(
+        tmp_path, monkeypatch):
+    """A second Ctrl-C, landing on the last record of the watch, must not cost that record."""
+    signal_while_resolving(monkeypatch, signal.SIGINT, SHOW.format(9))
+    assert watch_through(tmp_path, play(SHOW.format(9), 500.0)) == 0
+    assert [r["max_pos"] for r in sessions.read()] == [500.0]
+
+
+@pytest.mark.parametrize("sig", STOP_SIGNALS, ids=STOP_IDS)
+def test_a_signal_while_waiting_for_mpv_records_the_file_being_watched(
+        tmp_path, monkeypatch, sig):
+    """A paused film sends nothing, so the signal is the only thing that can end this wait."""
+    stream = MpvSocket.events
+
+    def then_signal(self):
+        events = stream(self)
+        yield next(events)          # the file
+        yield next(events)          # its position; then nothing, as when mpv is paused
+        signal.raise_signal(sig)
+        pytest.fail(f"{sig.name} did not interrupt the wait for mpv")
+
+    monkeypatch.setattr(MpvSocket, "events", then_signal)
+    rc = watch_through(tmp_path, play(SHOW.format(7), 900.0))
+    assert rc == 0
+    assert [r["max_pos"] for r in sessions.read()] == [900.0]
+
+
+def test_a_watch_puts_the_previous_signal_handlers_back(tmp_path):
+    """The handlers are the watch's only while it runs; any other command keeps its own."""
+    before = {sig: signal.getsignal(sig) for sig in STOP_SIGNALS}
+    assert run_watch(tmp_path, play(SHOW.format(8), 60.0)) == 0
+    assert {sig: signal.getsignal(sig) for sig in STOP_SIGNALS} == before
 
 
 def test_a_subscription_that_fails_closes_the_socket(tmp_path, monkeypatch, capsys):

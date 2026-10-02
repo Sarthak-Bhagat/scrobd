@@ -10,9 +10,13 @@ scrobd watch [--socket PATH]                record a session per file mpv plays
 import argparse
 import json
 import os
+import signal
 import sys
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import FrameType, TracebackType
+from typing import Self
 
 from . import _log, aliases, index, queue, sessions
 from .mpv import MpvSocket, MpvUnavailableError
@@ -151,6 +155,64 @@ def _default_socket() -> str | None:
     return str(Path(runtime) / "mpvsocket") if runtime else None
 
 
+class _Interrupts:
+    """SIGINT for the life of one watch, acted on only while waiting for mpv.
+
+    Only the wait for mpv's next event is cut short. That is where the watcher
+    can block indefinitely -- a paused film sends nothing -- and the one place
+    no session is in hand. Anywhere else a session may already be taken from
+    the accumulator and milliseconds from written, and cutting it short there
+    loses it without a word; so there the signal is noted and acted on at the
+    next wait, and one during the final record is noted and let go.
+
+    Held off in the handler rather than by `signal.pthread_sigmask`, because a
+    mask is per thread: a signal sent to the process goes to any thread not
+    masking it, and CPython then runs the handler in the main thread at its next
+    bytecode -- inside the very section the mask was protecting. A handler that
+    checks where the watcher is holds however many threads there are.
+    """
+
+    def __init__(self) -> None:
+        """Change nothing yet; installing is `__enter__`'s job."""
+        self._requested = False
+        self._waiting = False
+        self._previous: dict[signal.Signals,
+                             Callable[[int, FrameType | None], object] | int | None] = {}
+
+    def __enter__(self) -> Self:
+        """Take SIGINT over, keeping whatever handled it before."""
+        self._previous[signal.SIGINT] = signal.signal(signal.SIGINT, self._on_signal)
+        return self
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None,
+                 tb: TracebackType | None) -> None:
+        """Hand the signal back, so no other command inherits the watch's handling."""
+        for sig, previous in self._previous.items():
+            signal.signal(sig, previous)
+
+    def _on_signal(self, _signum: int, _frame: FrameType | None) -> None:
+        """Cut the wait for mpv short; anywhere else, only note that the watch should end."""
+        self._requested = True
+        if self._waiting:
+            self._waiting = False
+            raise KeyboardInterrupt
+
+    def next_event(self, events: Iterator[dict]) -> dict | None:
+        """Return mpv's next event, or None once mpv closes the socket or a signal arrives."""
+        try:
+            # `_waiting` is set before `_requested` is read, and the handler
+            # does the reverse, so a signal is either seen here or raised from
+            # inside `next`. Neither order can leave the watch blocked on a
+            # paused film with its signal already spent.
+            self._waiting = True
+            event = None if self._requested else next(events, None)
+            self._waiting = False
+        except KeyboardInterrupt:
+            self._waiting = False   # already so if the handler raised; not if it came another way
+            return None
+        return event
+
+
 def _cmd_watch(socket_path: str | None) -> int:
     """Record a session for every file mpv plays, until mpv exits or Ctrl-C."""
     socket_path = socket_path or _default_socket()
@@ -166,23 +228,23 @@ def _cmd_watch(socket_path: str | None) -> int:
         print(exc, file=sys.stderr)     # it already names the likely cause
         return 1
     acc = Accumulator()
-    try:
-        for e in mpv.events():
-            # `.get`: a property mpv cannot report yet may arrive with no `data`.
-            acc.feed(e["name"], e.get("data"), time.time())
-            # Take after every feed: the accumulator holds one finished session,
-            # and one left untaken is overwritten by the next without a word.
-            if not _record(acc.take()):
-                return 1
-    except KeyboardInterrupt:
-        pass        # Ctrl-C ends the watch exactly as mpv exiting does: below
-    finally:
-        mpv.close()
-    # The file still open when the stream ended. mpv closing the socket and
-    # Ctrl-C both land here, and losing the session being watched to either one
-    # is the silent loss this tool exists to prevent.
-    acc.finish(time.time())
-    return 0 if _record(acc.take()) else 1
+    with _Interrupts() as interrupts:
+        events = mpv.events()
+        try:
+            while (e := interrupts.next_event(events)) is not None:
+                # `.get`: a property mpv cannot report yet may arrive with no `data`.
+                acc.feed(e["name"], e.get("data"), time.time())
+                # Take after every feed: the accumulator holds one finished session,
+                # and one left untaken is overwritten by the next without a word.
+                if not _record(acc.take()):
+                    return 1
+        finally:
+            mpv.close()
+        # The file still open when the watch ended. mpv closing the socket and
+        # Ctrl-C both land here, and losing the session being watched to either
+        # one is the silent loss this tool exists to prevent.
+        acc.finish(time.time())
+        return 0 if _record(acc.take()) else 1
 
 
 def _build_parser() -> argparse.ArgumentParser:
