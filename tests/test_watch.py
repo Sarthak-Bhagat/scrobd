@@ -1,9 +1,16 @@
 """`scrobd watch` end to end, against a fake mpv."""
 
+import fcntl
 import json
+import os
 import signal
 import socket
+import subprocess
+import sys
+import termios
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -376,3 +383,54 @@ def test_a_subscription_that_fails_closes_the_socket(tmp_path, monkeypatch, caps
     assert run_watch(tmp_path, []) == 1
     assert "closed while subscribing" in capsys.readouterr().err
     assert opened[0].fileno() == -1         # closed, not left for the garbage collector
+
+
+def unread(conn):
+    """Return how many bytes sent on *conn* its peer has not read yet."""
+    return int.from_bytes(fcntl.ioctl(conn, termios.TIOCOUTQ, bytes(4)), sys.byteorder)
+
+
+def asleep_reading_a_socket(pid):
+    """Whether process *pid* is blocked in a read on a unix stream socket."""
+    try:
+        return Path(f"/proc/{pid}/wchan").read_text().startswith("unix_stream_read")
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="reads /proc and a Linux ioctl")
+def test_sigterm_ends_a_separate_watcher_asleep_in_a_real_read(tmp_path):
+    """The detached case, for real: its own process, blocked in `recv`, ended by `kill`.
+
+    The tests above raise the signal from Python, between reads. This one
+    lands it inside the system call, the way logout does to a paused film.
+    """
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.settimeout(10)                    # a watcher that never connects fails, not hangs
+    srv.bind(str(tmp_path / "mpvsocket"))
+    srv.listen(1)
+    # The socket path is relative to `cwd`, so the argv is all literals: nothing
+    # in it comes from outside this test.
+    with srv, subprocess.Popen([sys.executable, "-m", "scrobd.cli", "watch",
+                                "--socket", "mpvsocket"],
+                               cwd=tmp_path, stderr=subprocess.PIPE) as watcher:
+        try:
+            conn, _ = srv.accept()
+            with conn:
+                conn.settimeout(10)
+                conn.recv(4096)                             # the subscription
+                conn.sendall(b"".join((json.dumps(e) + "\n").encode()
+                                      for e in play(SHOW.format(10), 900.0)))
+                # Then nothing, as from a paused film. Wait until all of it has
+                # been read and the watcher is asleep in its next read.
+                deadline = time.monotonic() + 10
+                while not (unread(conn) == 0 and asleep_reading_a_socket(watcher.pid)):
+                    assert time.monotonic() < deadline, "the watcher never blocked reading"
+                    time.sleep(0.01)
+                os.kill(watcher.pid, signal.SIGTERM)
+                _, err = watcher.communicate(timeout=10)
+        finally:
+            if watcher.poll() is None:
+                watcher.kill()              # a failing test leaves no watcher behind
+    assert (watcher.returncode, err) == (0, b"")
+    assert [(r["episode"], r["max_pos"]) for r in sessions.read()] == [(10, 900.0)]
