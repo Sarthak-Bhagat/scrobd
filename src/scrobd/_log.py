@@ -41,7 +41,7 @@ _OFF = "SCROBD_LOG"         # "0" disables; anything else, including unset, leav
 # Dates the artefact carries about itself, so the file explains its own expiry
 # to whoever finds it without this repo open.
 _ADDED = "2026-09-21"
-_REVIEW_AFTER = "2026-09-28"
+_REVIEW_AFTER = "2026-10-09"
 
 # 5 MiB. A resolve line with a full library path runs ~500 bytes, and the
 # heaviest plausible week -- 50 files a day, two events each -- is ~350 KB. So

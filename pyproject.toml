@@ -46,6 +46,11 @@ ignore = [
   "INP001",   # tests/ is deliberately not a package. The shadowing this rule guards
               # against needs two test modules sharing a basename; all ours are unique.
 ]
+"tests/test_mpv_launcher.py" = [
+  "S603",     # the test launches real mpv on purpose. Its argv is built from tmp_path
+              # and shutil.which("mpv") -- an absolute path, so S607 never fires -- and
+              # nothing in it is untrusted.
+]
 "src/scrobd/cli.py" = [
   "T201",     # ruff's own docs for this rule: print "used to produce output as a part
               # of a command-line interface program are not typically a problem". The

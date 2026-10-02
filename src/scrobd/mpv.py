@@ -4,10 +4,11 @@ Newline-delimited JSON over a unix socket. We only ever read: observe a few
 properties, then consume the property-change events mpv pushes. No playback
 control, so there is nothing here that can disturb what is playing.
 
-`/tmp/mpvsocket` comes from `input-ipc-server` in mpv.conf, which is a single
-global option -- any user script setting it takes the channel over. mpv-discord
-does this, leaving the path on disk with nothing behind it. mediactl lost a
-session's watch data to that failure presenting as silence, so it raises here.
+`$XDG_RUNTIME_DIR/mpvsocket`, in the user's own runtime directory, comes from
+`input-ipc-server` in mpv.conf and discord.conf. That is a single global option
+-- any user script setting it takes the channel over. mpv-discord does this, and
+has left the path on disk with nothing behind it. mediactl lost a session's
+watch data to that failure presenting as silence, so it raises here.
 """
 
 import json
@@ -33,8 +34,9 @@ class MpvSocket:
         *timeout* bounds `connect` only. Reading is left blocking on purpose: a
         paused film reports nothing for as long as it stays paused, and a read
         timeout would end the event stream -- and with it the session -- while
-        the file is still open. `events` ends when mpv closes the socket; the
-        caller ends it with Ctrl-C.
+        the file is still open. `events` ends when mpv closes the socket, which
+        is how a watch normally ends; the caller can end it sooner with Ctrl-C
+        or SIGTERM.
         """
         self.path = path
         self.timeout = timeout

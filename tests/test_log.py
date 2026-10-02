@@ -139,7 +139,7 @@ def test_a_new_file_opens_with_a_dated_header():
     first = json.loads(_lines()[0])
     assert first["event"] == "log_started"
     assert first["added"] == "2026-09-21"
-    assert first["review_after"] == "2026-09-28"
+    assert first["review_after"] == "2026-10-09"
     assert first["temporary"] is True
     assert "SCROBD_LOG=0" in first["note"]
 
