@@ -35,8 +35,8 @@ class MpvSocket:
         paused film reports nothing for as long as it stays paused, and a read
         timeout would end the event stream -- and with it the session -- while
         the file is still open. `events` ends when mpv closes the socket, which
-        is how a watch normally ends; the caller can end it sooner with Ctrl-C
-        or SIGTERM.
+        is how a watch normally ends; the caller can end it sooner with Ctrl-C,
+        SIGTERM or SIGHUP.
         """
         self.path = path
         self.timeout = timeout

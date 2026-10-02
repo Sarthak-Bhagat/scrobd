@@ -22,14 +22,16 @@ def isolated(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def sigterm_fails_the_test():
-    """Fail the test on a SIGTERM that `watch` did not take over, instead of killing pytest."""
-    def unhandled(_signum, _frame):
-        pytest.fail("SIGTERM reached the handler `watch` should have replaced")
+def unhandled_stop_signals_fail_the_test():
+    """Fail the test on a SIGTERM or SIGHUP `watch` did not take over, instead of killing pytest."""
+    def unhandled(signum, _frame):
+        pytest.fail(f"{signal.Signals(signum).name} reached the handler `watch` should "
+                    "have replaced")
 
-    previous = signal.signal(signal.SIGTERM, unhandled)
+    previous = {sig: signal.signal(sig, unhandled) for sig in (signal.SIGTERM, signal.SIGHUP)}
     yield
-    signal.signal(signal.SIGTERM, previous)
+    for sig, handler in previous.items():
+        signal.signal(sig, handler)
 
 
 def serve(path, lines, ready):
@@ -290,8 +292,8 @@ def test_the_help_names_the_default_socket(capsys):
     assert "$XDG_RUNTIME_DIR/mpvsocket" in capsys.readouterr().out
 
 
-STOP_SIGNALS = [signal.SIGINT, signal.SIGTERM]
-STOP_IDS = ["SIGINT", "SIGTERM"]
+STOP_SIGNALS = [signal.SIGINT, signal.SIGTERM, signal.SIGHUP]
+STOP_IDS = ["SIGINT", "SIGTERM", "SIGHUP"]
 
 
 def watch_through(tmp_path, lines):
