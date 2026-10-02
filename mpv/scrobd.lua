@@ -13,8 +13,12 @@ require("mp.options").read_options(options, "scrobd")
 -- $1 is the socket. stderr goes to a file because a detached child's stderr is
 -- discarded, and that is where `scrobd watch` reports a failed write, with the
 -- whole session row.
+--
+-- ~/.local/bin, where `uv tool install` puts scrobd, is APPENDED to PATH: an
+-- mpv opened from the desktop inherits the session's PATH, which lacks it, and
+-- appending keeps whatever `scrobd` PATH already finds the one that runs.
 local LAUNCH = 'd="${XDG_STATE_HOME:-$HOME/.local/state}/scrobd"; mkdir -p "$d"; '
-    .. 'exec scrobd watch --socket "$1" 2>>"$d/watch.stderr"'
+    .. 'PATH="$PATH:$HOME/.local/bin" exec scrobd watch --socket "$1" 2>>"$d/watch.stderr"'
 
 local function on_first_file()
     -- Once per mpv, not once per file: mediactl plays a whole folder in one mpv,

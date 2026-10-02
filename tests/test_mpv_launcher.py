@@ -15,21 +15,26 @@ CLIP = "av://lavfi:testsrc=size=64x64:rate=5"
 pytestmark = pytest.mark.skipif(MPV is None, reason="mpv is not installed")
 
 
-def stub_scrobd(tmp_path: Path) -> Path:
-    """Put a fake `scrobd` on PATH that appends its argv as one line and says hello on stderr."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    record = tmp_path / "argv"
+def stub_scrobd(tmp_path: Path, bin_dir: Path | None = None) -> Path:
+    """Put a fake `scrobd` that appends its argv as one line and says hello on stderr.
+
+    In *bin_dir*, or by default in the directory `play` puts first on PATH.
+    Returns the file the argv goes to, which exists only once the stub has run.
+    """
+    bin_dir = bin_dir or tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    record = bin_dir / "argv"
     stub = bin_dir / "scrobd"
     stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{record}"\necho stub-stderr >&2\n')
     stub.chmod(0o755)
     return record
 
 
-def play(tmp_path: Path, *args: str) -> None:
+def play(tmp_path: Path, *args: str, **overrides: str) -> None:
+    """Run mpv with the launcher loaded and `tmp_path/bin` first on PATH; *overrides* win."""
     env = {**os.environ,
            "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
-           "XDG_STATE_HOME": str(tmp_path / "state")}
+           "XDG_STATE_HOME": str(tmp_path / "state"), **overrides}
     subprocess.run(
         [MPV, "--no-config", "--vo=null", "--ao=null", "--frames=3", "--idle=no",
          "--keep-open=no", f"--script={SCRIPT}", *args],
@@ -51,6 +56,26 @@ def test_it_starts_scrobd_watch_on_mpvs_own_socket(tmp_path):
     play(tmp_path, f"--input-ipc-server={sock}", CLIP)
     assert wait_for(record)
     assert record.read_text().splitlines() == [f"watch --socket {sock}"]
+
+
+def test_it_finds_scrobd_in_local_bin_when_the_desktop_path_lacks_it(tmp_path):
+    """An mpv opened from the desktop inherits a PATH without ~/.local/bin, where uv puts it."""
+    home = tmp_path / "home"
+    record = stub_scrobd(tmp_path, home / ".local" / "bin")
+    sock = tmp_path / "mpv.sock"
+    play(tmp_path, f"--input-ipc-server={sock}", CLIP, PATH=os.defpath, HOME=str(home))
+    assert wait_for(record)
+    assert record.read_text().splitlines() == [f"watch --socket {sock}"]
+
+
+def test_a_scrobd_already_on_path_wins_over_the_one_in_local_bin(tmp_path):
+    """Appended, not prepended: the `scrobd` PATH already finds is still the one that runs."""
+    home = tmp_path / "home"
+    in_local_bin = stub_scrobd(tmp_path, home / ".local" / "bin")
+    on_path = stub_scrobd(tmp_path)
+    play(tmp_path, f"--input-ipc-server={tmp_path / 'mpv.sock'}", CLIP, HOME=str(home))
+    assert wait_for(on_path)
+    assert not in_local_bin.exists()
 
 
 def test_it_watches_the_socket_a_script_moved_it_to_not_the_one_mpv_started_with(tmp_path):
