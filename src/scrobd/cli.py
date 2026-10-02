@@ -156,7 +156,12 @@ def _default_socket() -> str | None:
 
 
 class _Interrupts:
-    """SIGINT for the life of one watch, acted on only while waiting for mpv.
+    """SIGINT and SIGTERM for the life of one watch, acted on only while waiting for mpv.
+
+    SIGTERM is the one that arrives in use: the mpv script starts the watcher
+    detached, with no terminal to press Ctrl-C in, so logout or shutdown is what
+    ends it. Both end the watch the same way, so there is one path to the final
+    record, not two.
 
     Only the wait for mpv's next event is cut short. That is where the watcher
     can block indefinitely -- a paused film sends nothing -- and the one place
@@ -180,13 +185,14 @@ class _Interrupts:
                              Callable[[int, FrameType | None], object] | int | None] = {}
 
     def __enter__(self) -> Self:
-        """Take SIGINT over, keeping whatever handled it before."""
-        self._previous[signal.SIGINT] = signal.signal(signal.SIGINT, self._on_signal)
+        """Take SIGINT and SIGTERM over, keeping whatever handled them before."""
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            self._previous[sig] = signal.signal(sig, self._on_signal)
         return self
 
     def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None,
                  tb: TracebackType | None) -> None:
-        """Hand the signal back, so no other command inherits the watch's handling."""
+        """Hand both signals back, so no other command inherits the watch's handling."""
         for sig, previous in self._previous.items():
             signal.signal(sig, previous)
 
@@ -214,7 +220,7 @@ class _Interrupts:
 
 
 def _cmd_watch(socket_path: str | None) -> int:
-    """Record a session for every file mpv plays, until mpv exits or Ctrl-C."""
+    """Record a session for every file mpv plays, until mpv exits, Ctrl-C or SIGTERM."""
     socket_path = socket_path or _default_socket()
     if socket_path is None:
         print("XDG_RUNTIME_DIR is unset, so there is no default mpv socket -- "
@@ -240,9 +246,9 @@ def _cmd_watch(socket_path: str | None) -> int:
                     return 1
         finally:
             mpv.close()
-        # The file still open when the watch ended. mpv closing the socket and
-        # Ctrl-C both land here, and losing the session being watched to either
-        # one is the silent loss this tool exists to prevent.
+        # The file still open when the watch ended. mpv closing the socket,
+        # Ctrl-C and SIGTERM all land here, and losing the session being watched
+        # to any of them is the silent loss this tool exists to prevent.
         acc.finish(time.time())
         return 0 if _record(acc.take()) else 1
 

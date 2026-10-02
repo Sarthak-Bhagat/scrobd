@@ -21,6 +21,17 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
 
 
+@pytest.fixture(autouse=True)
+def sigterm_fails_the_test():
+    """Fail the test on a SIGTERM that `watch` did not take over, instead of killing pytest."""
+    def unhandled(_signum, _frame):
+        pytest.fail("SIGTERM reached the handler `watch` should have replaced")
+
+    previous = signal.signal(signal.SIGTERM, unhandled)
+    yield
+    signal.signal(signal.SIGTERM, previous)
+
+
 def serve(path, lines, ready):
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(str(path))
@@ -191,8 +202,8 @@ def test_the_help_names_the_default_socket(capsys):
     assert "$XDG_RUNTIME_DIR/mpvsocket" in capsys.readouterr().out
 
 
-STOP_SIGNALS = [signal.SIGINT]
-STOP_IDS = ["SIGINT"]
+STOP_SIGNALS = [signal.SIGINT, signal.SIGTERM]
+STOP_IDS = ["SIGINT", "SIGTERM"]
 
 
 def watch_through(tmp_path, lines):
@@ -239,7 +250,7 @@ def test_a_signal_while_the_final_session_is_being_recorded_waits_for_the_write(
 @pytest.mark.parametrize("sig", STOP_SIGNALS, ids=STOP_IDS)
 def test_a_signal_while_waiting_for_mpv_records_the_file_being_watched(
         tmp_path, monkeypatch, sig):
-    """A paused film sends nothing, so the signal is the only thing that can end this wait."""
+    """SIGTERM is what arrives in use: the watcher has no terminal, and logout ends it."""
     stream = MpvSocket.events
 
     def then_signal(self):
