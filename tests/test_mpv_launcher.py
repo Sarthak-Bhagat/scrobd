@@ -10,6 +10,7 @@ import pytest
 
 MPV = shutil.which("mpv")
 SCRIPT = Path(__file__).resolve().parent.parent / "mpv" / "scrobd.lua"
+RESETS_SOCKET = Path(__file__).resolve().parent / "fixtures" / "resets_ipc_server.lua"
 CLIP = "av://lavfi:testsrc=size=64x64:rate=5"
 pytestmark = pytest.mark.skipif(MPV is None, reason="mpv is not installed")
 
@@ -50,6 +51,17 @@ def test_it_starts_scrobd_watch_on_mpvs_own_socket(tmp_path):
     play(tmp_path, f"--input-ipc-server={sock}", CLIP)
     assert wait_for(record)
     assert record.read_text().splitlines() == [f"watch --socket {sock}"]
+
+
+def test_it_watches_the_socket_a_script_moved_it_to_not_the_one_mpv_started_with(tmp_path):
+    # discord.lua moves input-ipc-server off the path mpv started with. The fixture
+    # does too, at a moment that makes the outcome deterministic; see its header.
+    record = stub_scrobd(tmp_path)
+    first, final = tmp_path / "first.sock", tmp_path / "final.sock"
+    play(tmp_path, f"--input-ipc-server={first}", f"--script={RESETS_SOCKET}",
+         f"--script-opts=resets_ipc_server-path={final}", CLIP)
+    assert wait_for(record)
+    assert record.read_text().splitlines() == [f"watch --socket {final}"]
 
 
 def test_it_starts_once_however_many_files_mpv_plays(tmp_path):
