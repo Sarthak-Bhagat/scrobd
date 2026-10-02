@@ -20,7 +20,7 @@ from typing import Self
 
 from . import _log, aliases, index, queue, sessions
 from .mpv import MpvSocket, MpvUnavailableError
-from .resolution import Resolution
+from .resolution import UNKNOWN, Resolution
 from .resolver import resolve as resolve_one
 from .session import Accumulator, Session
 
@@ -126,37 +126,85 @@ def _worth_asking_about(session: Session) -> bool:
     return session.duration is not None or session.max_pos is not None
 
 
-def _record(session: Session | None) -> bool:
-    """Resolve and record one finished session, queueing it if it cannot be identified.
+class _Recorder:
+    """Records each session a watch takes, and knows which one is not yet safe.
 
-    Return False if the session log could not be written. The row then goes to
-    stderr in full, so the session survives in the terminal or the journal, and
-    the caller stops: a log that cannot be written now will almost certainly not
-    be writable for the next file either, and a watcher left running looks like
-    one that is recording.
+    A session is *in hand* from the moment it is taken from the accumulator
+    until its row is in the session log or on stderr. That is the window in
+    which an unforeseen error could lose it without a word, so `salvage` knows
+    what to print.
+
+    A write that fails is reported on stderr with the row in full, and the watch
+    carries on. The watcher runs detached, its stderr kept in a file: stopping
+    would lose every later file in that mpv, while carrying on loses none of
+    them -- each row still lands in that file. `failed` makes the exit code say
+    that something was not recorded.
     """
-    if session is None:
-        return True
-    now = time.time()
-    r = resolve_one(session.path)
-    row = sessions.row(session, r, now)
-    try:
-        written = sessions.record(session, r, now)
-    except OSError as exc:
-        print(f"cannot write the session log: {exc}", file=sys.stderr)
-        print("  this session was not recorded; its row follows", file=sys.stderr)
-        print(json.dumps(row), file=sys.stderr)
-        return False
-    # `written` is False for a replay deduplicated inside the window, which the
-    # post-mortem log should still show was seen. `row`'s own `ts` overrides the
-    # one `_log.event` stamps, on purpose: both mark this record, milliseconds
-    # apart, and keeping the row's makes the log line the written row exactly.
-    _log.event("session", **row, written=written)
-    if not r.is_actionable and _worth_asking_about(session):
+
+    def __init__(self) -> None:
+        """Start with nothing in hand and nothing failed."""
+        self.in_hand: Session | None = None
+        self.failed = False
+
+    def record(self, session: Session | None) -> None:
+        """Resolve and record *session*, queueing it if it cannot be identified."""
+        if session is None:
+            return
+        self.in_hand = session
+        now = time.time()
+        r = resolve_one(session.path)
+        row = sessions.row(session, r, now)
+        try:
+            written = sessions.record(session, r, now)
+        except OSError as exc:
+            self._report(row, f"cannot write the session log: {exc}",
+                         "  this session was not recorded; its row follows")
+            return
+        self.in_hand = None
+        # `written` is False for a replay deduplicated inside the window, which the
+        # post-mortem log should still show was seen. `row`'s own `ts` overrides the
+        # one `_log.event` stamps, on purpose: both mark this record, milliseconds
+        # apart, and keeping the row's makes the log line the written row exactly.
+        _log.event("session", **row, written=written)
         # Same rule as `_cmd_resolve`: `is_actionable`, not `confidence == "none"`.
-        entry = queue.add(session.path, r.title or session.path)
+        if r.is_actionable or not _worth_asking_about(session):
+            return
+        try:
+            # The queue's temporary file has a fixed name, so two watchers
+            # writing at once can collide on it; that costs the entry, not the watch.
+            entry = queue.add(session.path, r.title or session.path)
+        except OSError as exc:
+            self._report(row, f"cannot add to the review queue: {exc}",
+                         "  this session was recorded but not queued; its row follows")
+            return
         _log.event("queued", path=session.path, folder=entry["folder"], seen=entry["seen"])
-    return True
+
+    def salvage(self, acc: Accumulator) -> None:
+        """Print every session not yet safe: the one in hand, then the one still open.
+
+        For an error nothing else caught, on its way out. The rows are left
+        unresolved, identity unknown, because the error may have come from the
+        resolver itself; the path is in the row, and `scrobd resolve` will
+        answer it again.
+        """
+        now = time.time()
+        acc.finish(now)
+        unsafe = [s for s in (self.in_hand, acc.take()) if s is not None]
+        if not unsafe:
+            return
+        print("scrobd watch is stopping on an error; these sessions were not recorded, "
+              "and their rows follow, unresolved", file=sys.stderr)
+        for session in unsafe:
+            print(json.dumps(sessions.row(session, UNKNOWN, now)), file=sys.stderr)
+        self.in_hand = None
+
+    def _report(self, row: dict, *why: str) -> None:
+        """Put a failed write's reason and its row on stderr, where the session survives it."""
+        for line in why:
+            print(line, file=sys.stderr)
+        print(json.dumps(row), file=sys.stderr)
+        self.in_hand = None
+        self.failed = True
 
 
 def _default_socket() -> str | None:
@@ -251,23 +299,36 @@ def _cmd_watch(socket_path: str | None) -> int:
         print(exc, file=sys.stderr)     # it already names the likely cause
         return 1
     acc = Accumulator()
+    recorder = _Recorder()
     with _Interrupts() as interrupts:
-        events = mpv.events()
         try:
-            while (e := interrupts.next_event(events)) is not None:
-                # `.get`: a property mpv cannot report yet may arrive with no `data`.
-                acc.feed(e["name"], e.get("data"), time.time())
-                # Take after every feed: the accumulator holds one finished session,
-                # and one left untaken is overwritten by the next without a word.
-                if not _record(acc.take()):
-                    return 1
-        finally:
-            mpv.close()
-        # The file still open when the watch ended. mpv closing the socket,
-        # Ctrl-C and SIGTERM all land here, and losing the session being watched
-        # to any of them is the silent loss this tool exists to prevent.
-        acc.finish(time.time())
-        return 0 if _record(acc.take()) else 1
+            _follow(mpv, acc, recorder, interrupts)
+        except BaseException:
+            # Anything nothing else caught. It still ends the watch, with its
+            # traceback, but not before every session in hand is on stderr.
+            recorder.salvage(acc)
+            raise
+    return 1 if recorder.failed else 0
+
+
+def _follow(mpv: MpvSocket, acc: Accumulator, recorder: _Recorder,
+            interrupts: _Interrupts) -> None:
+    """Record a session for every file mpv plays, then the one open when the watch ends."""
+    events = mpv.events()
+    try:
+        while (e := interrupts.next_event(events)) is not None:
+            # `.get`: a property mpv cannot report yet may arrive with no `data`.
+            acc.feed(e["name"], e.get("data"), time.time())
+            # Take after every feed: the accumulator holds one finished session,
+            # and one left untaken is overwritten by the next without a word.
+            recorder.record(acc.take())
+    finally:
+        mpv.close()
+    # The file still open when the watch ended. mpv closing the socket,
+    # Ctrl-C and SIGTERM all land here, and losing the session being watched
+    # to any of them is the silent loss this tool exists to prevent.
+    acc.finish(time.time())
+    recorder.record(acc.take())
 
 
 def _build_parser() -> argparse.ArgumentParser:

@@ -9,7 +9,7 @@ import pytest
 
 from scrobd import cli, queue, sessions
 from scrobd.mpv import MpvSocket, MpvUnavailableError
-from scrobd.paths import state_dir
+from scrobd.paths import data_dir, state_dir
 
 
 @pytest.fixture(autouse=True)
@@ -200,18 +200,61 @@ def test_every_session_is_logged_with_its_row_and_whether_it_was_written(tmp_pat
     assert {k: v for k, v in seen[0].items() if k not in {"event", "written"}} == rows[0]
 
 
-def test_a_session_log_that_cannot_be_written_stops_the_watch_and_keeps_the_row(
+def rows_on_stderr(err):
+    """Return the session rows printed to stderr, in order; every other line is prose."""
+    return [json.loads(line) for line in err.splitlines() if line.startswith("{")]
+
+
+def test_a_session_log_that_cannot_be_written_keeps_every_row_and_the_watch_carries_on(
         tmp_path, capsys):
-    """The row goes to stderr, so the session survives the failed write."""
+    """Each row goes to stderr, so every session survives the failed writes.
+
+    Carrying on, because the watcher runs detached: stopping would lose every
+    later file in that mpv, where carrying on loses none of them. The exit code
+    still says that something was not recorded.
+    """
     (state_dir() / "sessions.jsonl").mkdir()          # any write to it raises OSError
-    rc = run_watch(tmp_path, play(SHOW.format(5), 1300.0))
+    rc = run_watch(tmp_path, play(SHOW.format(5), 1300.0) + play(SHOW.format(6), 420.0))
     assert rc == 1
-    err = capsys.readouterr().err.strip().splitlines()
-    assert "sessions.jsonl" in err[0]
-    row = json.loads(err[-1])
-    assert row["path"] == SHOW.format(5)
-    assert row["max_pos"] == 1300.0
-    assert row["ids"] == {"tvdb": 99}
+    err = capsys.readouterr().err
+    assert "sessions.jsonl" in err.splitlines()[0]
+    assert [(r["path"], r["max_pos"], r["ids"]) for r in rows_on_stderr(err)] == [
+        (SHOW.format(5), 1300.0, {"tvdb": 99}), (SHOW.format(6), 420.0, {"tvdb": 99})]
+
+
+def test_a_queue_that_cannot_be_written_keeps_the_row_and_the_watch_carries_on(
+        tmp_path, capsys):
+    """The queue's temporary file has a fixed name, so two writers can collide on it."""
+    (state_dir() / "review.tmp").mkdir()              # the queue's write cannot land
+    mystery = "/m/Mystery/Season 01/x.mkv"
+    rc = run_watch(tmp_path, play(mystery, 60.0) + play(SHOW.format(7), 900.0))
+    assert rc == 1
+    assert [(r["path"], r["max_pos"]) for r in sessions.read()] == [
+        (mystery, 60.0), (SHOW.format(7), 900.0)]
+    err = capsys.readouterr().err
+    assert "review queue" in err.splitlines()[0]
+    assert [r["path"] for r in rows_on_stderr(err)] == [mystery]
+
+
+def test_an_unforeseen_error_puts_every_session_in_hand_on_stderr_before_it_ends_the_watch(
+        tmp_path, capsys):
+    """It still ends the watch, but not with a session lost without a word.
+
+    A corrupt alias table is one such error: the resolver reads the table for
+    a file its name cannot identify, and undecodable bytes raise from there.
+    Here that file is the one in hand -- taken, not yet written -- and the next
+    file has just opened.
+    """
+    (data_dir() / "aliases.json").write_bytes(b"\xff")
+    mystery = "/m/Mystery/Season 01/x.mkv"
+    with pytest.raises(UnicodeDecodeError):
+        run_watch(tmp_path, [*play(SHOW.format(1), 1300.0), *play(mystery, 60.0),
+                             {"event": "property-change", "name": "path",
+                              "data": SHOW.format(2)}])
+    assert [r["max_pos"] for r in sessions.read()] == [1300.0]  # written before the error
+    salvaged = rows_on_stderr(capsys.readouterr().err)
+    assert [(r["path"], r["max_pos"]) for r in salvaged] == [
+        (mystery, 60.0), (SHOW.format(2), None)]
 
 
 def test_the_default_socket_is_mpvsocket_in_the_runtime_dir(tmp_path, monkeypatch):
