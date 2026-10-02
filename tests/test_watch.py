@@ -70,6 +70,7 @@ def test_a_played_file_becomes_a_session_row(tmp_path):
     assert len(rows) == 1
     assert rows[0]["ids"] == {"tvdb": 99}
     assert rows[0]["episode"] == 3
+    assert rows[0]["first_pos"] == 1300.0
     assert rows[0]["max_pos"] == 1300.0
 
 
@@ -134,6 +135,7 @@ def test_a_file_mpv_reported_nothing_about_is_recorded_with_gaps(tmp_path):
     assert rc == 0
     row = sessions.read()[0]
     assert row["duration"] is None
+    assert row["first_pos"] is None
     assert row["max_pos"] is None
     assert row["samples"] == 0
 

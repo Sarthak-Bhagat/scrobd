@@ -4,9 +4,9 @@
 is no `watched` field: whether a session counts as watched is derived at read
 time from `max_pos / duration`, so changing the threshold later reinterprets
 history instead of requiring it to be edited. A 30% abandon is a row like any
-other. No sink can hold it; this log can. `duration` and `max_pos` are written
-as `null` when mpv never reported them -- a missing number is a gap, a guessed
-one is a lie.
+other. No sink can hold it; this log can. `duration`, `first_pos` and `max_pos`
+are written as `null` when mpv never reported them -- a missing number is a
+gap, a guessed one is a lie.
 
 **Nothing is discarded for being unidentified.** A session the resolver could
 not name is still a row, with empty `ids` and confidence `"none"`, so the watch
@@ -148,6 +148,7 @@ def row(session: Session, resolution: Resolution, now: float) -> dict:
         "started_at": session.started_at,
         "ended_at": session.ended_at,
         "duration": session.duration,
+        "first_pos": session.first_pos,
         "max_pos": session.max_pos,
         "samples": session.samples,
         "kind": resolution.kind,

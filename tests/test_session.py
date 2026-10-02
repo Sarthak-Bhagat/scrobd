@@ -31,7 +31,9 @@ def test_a_new_path_closes_the_previous_session():
     assert first.ended_at == 200.0
     feed(acc, [("time-pos", 30.0, 250.0)])
     acc.finish(300.0)
-    assert acc.take().path == "/m/b.mkv"
+    second = acc.take()
+    assert second.path == "/m/b.mkv"
+    assert second.first_pos == 30.0           # its own, not carried over from a.mkv
 
 
 def test_max_pos_survives_seeking_backwards():
@@ -41,6 +43,17 @@ def test_max_pos_survives_seeking_backwards():
                ("time-pos", 90.0, 10.0), ("time-pos", 20.0, 20.0)])
     acc.finish(30.0)
     assert acc.take().max_pos == 90.0
+
+
+def test_first_pos_is_where_the_play_began():
+    """A reopen at the resume point can reach the max_pos of a real watch; this tells them apart."""
+    acc = Accumulator()
+    feed(acc, [("path", "/m/a.mkv", 0.0), ("time-pos", 1300.0, 1.0),
+               ("time-pos", 1305.0, 6.0), ("time-pos", 20.0, 7.0)])
+    acc.finish(8.0)
+    s = acc.take()
+    assert s.first_pos == 1300.0
+    assert s.max_pos == 1305.0
 
 
 def test_pause_does_not_end_a_session():
@@ -61,6 +74,7 @@ def test_no_position_ever_reported_leaves_max_pos_none():
     acc.finish(10.0)
     s = acc.take()
     assert s.max_pos is None
+    assert s.first_pos is None
     assert s.duration == 1400.0
 
 

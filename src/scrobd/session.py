@@ -1,8 +1,9 @@
 """One record per file played, built from a stream of mpv property changes.
 
-Sessions, not thresholds. The record carries start, end and the furthest
-position reached; whether that counts as "watched" is derived at read time and
-never stored. A 30% abandon is real data -- no sink can hold it, this log can.
+Sessions, not thresholds. The record carries start, end, the position the play
+began at and the furthest it reached; whether that counts as "watched" is
+derived at read time and never stored. A 30% abandon is real data -- no sink
+can hold it, this log can.
 
 Pure: no socket, no clock. `now` is supplied by the caller, so tests drive time
 directly instead of sleeping.
@@ -13,12 +14,20 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Session:
-    """One continuous play of one file."""
+    """One continuous play of one file.
+
+    `first_pos` is the first position mpv reported -- where this play began.
+    With save-position-on-quit, a five-second reopen at the resume point
+    reaches a `max_pos` that on its own reads like a whole watch; beside
+    `first_pos` it reads as five seconds. Rows cannot be back-filled once
+    written, so it is recorded from the start.
+    """
 
     path: str
     started_at: float
     ended_at: float
     duration: float | None
+    first_pos: float | None
     max_pos: float | None
     samples: int
 
@@ -32,6 +41,7 @@ class Accumulator:
         self._started: float = 0.0
         self._last: float = 0.0
         self._duration: float | None = None
+        self._first_pos: float | None = None
         self._max_pos: float | None = None
         self._samples: int = 0
         self._done: Session | None = None
@@ -59,6 +69,8 @@ class Accumulator:
         elif name == "time-pos" and isinstance(data, int | float):
             pos = float(data)
             self._samples += 1
+            if self._first_pos is None:
+                self._first_pos = pos
             # Monotonic on purpose. Watching to 90% and rewinding to rewatch a
             # scene is still a 90% watch, so a later, lower position never
             # overwrites a higher earlier one.
@@ -83,17 +95,18 @@ class Accumulator:
     def _open(self, path: str, now: float) -> None:
         """Begin a session for *path*, discarding any leftover state."""
         self._path, self._started, self._last = path, now, now
-        self._duration = self._max_pos = None
+        self._duration = self._first_pos = self._max_pos = None
         self._samples = 0
 
     def _close(self, now: float) -> None:
         """Freeze the open session, if there is one, into the take slot."""
         if self._path is None:
             return
-        # `max_pos` and `duration` stay None when mpv never reported them.
-        # A missing number is a gap the reader can handle; a guessed one is a
-        # lie in a watch history. Nothing here derives "watched".
+        # `duration`, `first_pos` and `max_pos` stay None when mpv never
+        # reported them. A missing number is a gap the reader can handle; a
+        # guessed one is a lie in a watch history. Nothing here derives "watched".
         self._done = Session(path=self._path, started_at=self._started,
                              ended_at=max(now, self._last), duration=self._duration,
-                             max_pos=self._max_pos, samples=self._samples)
+                             first_pos=self._first_pos, max_pos=self._max_pos,
+                             samples=self._samples)
         self._path = None

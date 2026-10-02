@@ -1,5 +1,7 @@
 """The append-only session log and its measured dedupe window."""
 
+from dataclasses import replace
+
 import pytest
 
 from scrobd import sessions
@@ -19,7 +21,9 @@ def ep(n=1):
 
 
 def sess(path="/m/a.mkv", max_pos=1300.0, duration=1400.0, start=0.0, end=1400.0):
+    # A session with no position reported has no first position either.
     return Session(path=path, started_at=start, ended_at=end, duration=duration,
+                   first_pos=0.0 if max_pos is not None else None,
                    max_pos=max_pos, samples=10)
 
 
@@ -36,6 +40,14 @@ def test_row_is_exactly_the_line_record_writes():
     """One builder, so a caller logging a session cannot drift from what was written."""
     sessions.record(sess(), ep(), now=1000.0)
     assert sessions.read() == [sessions.row(sess(), ep(), now=1000.0)]
+
+
+def test_first_pos_is_written_and_a_missing_one_is_null():
+    """Where the play began, so a reopen at the resume point reads as one; never a guess."""
+    sessions.record(replace(sess(max_pos=1305.0), first_pos=1300.0), ep(1), now=1000.0)
+    sessions.record(sess(max_pos=None), ep(2), now=1000.0)
+    assert [(r["first_pos"], r["max_pos"]) for r in sessions.read()] == [
+        (1300.0, 1305.0), (None, None)]
 
 
 def test_watched_is_not_stored_as_a_flag():
@@ -75,6 +87,7 @@ def test_a_missing_position_neither_adds_progress_nor_blocks_it():
     assert sessions.record(sess(max_pos=600.0), ep(5), now=1060.0) is True
     assert sessions.record(sess(max_pos=None), ep(5), now=1120.0) is False
     assert [r["max_pos"] for r in sessions.read()] == [None, 600.0]
+
 
 def test_a_different_episode_within_the_window_is_not_deduped():
     sessions.record(sess(), ep(5), now=1000.0)
