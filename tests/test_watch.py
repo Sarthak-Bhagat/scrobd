@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from scrobd import cli, queue, sessions
-from scrobd.mpv import MpvSocket
+from scrobd.mpv import MpvSocket, MpvUnavailableError
 from scrobd.paths import state_dir
 
 
@@ -188,3 +188,18 @@ def test_the_help_names_the_default_socket(capsys):
     with pytest.raises(SystemExit):
         cli.main(["watch", "--help"])
     assert "$XDG_RUNTIME_DIR/mpvsocket" in capsys.readouterr().out
+
+
+def test_a_subscription_that_fails_closes_the_socket(tmp_path, monkeypatch, capsys):
+    """`connect` can fail after the socket is open: mpv exiting mid-subscribe."""
+    opened = []
+
+    def mpv_exits_while_subscribing(self, _payloads):
+        opened.append(self._sock)
+        msg = f"{self.path} closed while subscribing -- did mpv just exit?"
+        raise MpvUnavailableError(msg)
+
+    monkeypatch.setattr(MpvSocket, "_send", mpv_exits_while_subscribing)
+    assert run_watch(tmp_path, []) == 1
+    assert "closed while subscribing" in capsys.readouterr().err
+    assert opened[0].fileno() == -1         # closed, not left for the garbage collector

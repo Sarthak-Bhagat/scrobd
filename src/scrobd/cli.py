@@ -127,7 +127,9 @@ def _record(session: Session | None) -> bool:
         print(json.dumps(row), file=sys.stderr)
         return False
     # `written` is False for a replay deduplicated inside the window, which the
-    # post-mortem log should still show was seen.
+    # post-mortem log should still show was seen. `row`'s own `ts` overrides the
+    # one `_log.event` stamps, on purpose: both mark this record, milliseconds
+    # apart, and keeping the row's makes the log line the written row exactly.
     _log.event("session", **row, written=written)
     if not r.is_actionable:
         # Same rule as `_cmd_resolve`: `is_actionable`, not `confidence == "none"`.
@@ -160,6 +162,7 @@ def _cmd_watch(socket_path: str | None) -> int:
     try:
         mpv.connect()
     except MpvUnavailableError as exc:
+        mpv.close()     # the subscription can fail with the socket already open
         print(exc, file=sys.stderr)     # it already names the likely cause
         return 1
     acc = Accumulator()
