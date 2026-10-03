@@ -4,7 +4,7 @@ scrobd resolve <path>                       what is this file?
 scrobd review                               what could I not identify?
 scrobd review --answer <folder> --tvdb N    teach it, once, for the whole series
 scrobd index --from-json <series> <movies>  rebuild the local index
-scrobd watch [--socket PATH]                record a session per file mpv plays
+scrobd watch [--socket PATH]                record a session per library file mpv plays
 """
 
 import argparse
@@ -14,11 +14,12 @@ import signal
 import sys
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from types import FrameType, TracebackType
 from typing import Self
 
-from . import _log, aliases, index, queue, sessions
+from . import _log, aliases, config, index, queue, sessions
 from .mpv import MpvSocket, MpvUnavailableError
 from .resolution import UNKNOWN, Resolution
 from .resolver import resolve as resolve_one
@@ -126,6 +127,45 @@ def _worth_asking_about(session: Session) -> bool:
     return session.duration is not None or session.max_pos is not None
 
 
+def _absolute(session: Session) -> Session:
+    """Return *session* with its path made absolute, by string alone.
+
+    mpv reports `path` as it was given, so `mpv x.mkv` reports `x.mkv`. The
+    watcher inherits mpv's working directory -- the launcher starts it from
+    mpv -- so the path is completed against ours as mpv completed it. A URL is
+    left alone: joined onto a directory it would read as a local file.
+
+    `Path.absolute` and `normpath` together are `os.path.abspath`. Not
+    `resolve`: that follows symlinks by asking the filesystem, and the library
+    is on an autofs/sshfs mount that can hang in D state, taking the watcher
+    with it.
+    """
+    if "://" in session.path:
+        return session
+    return replace(session, path=os.path.normpath(Path(session.path).absolute()))
+
+
+def _under(path: str, root: str) -> bool:
+    """Whether *path* is *root* or inside it, by string alone.
+
+    `/media/TV_Old` starts with `/media/TV` but is not inside it, so the prefix
+    is the root and a separator. The filesystem root already ends in one.
+    """
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _in_library(path: str, library: list[str] | None) -> bool:
+    """Whether a session for *path* is recorded: inside the library, or anywhere without one.
+
+    A URL is never in a library: a library is folders.
+    """
+    if library is None:
+        return True
+    if "://" in path:
+        return False
+    return any(_under(path, root) for root in library)
+
+
 class _Recorder:
     """Records each session a watch takes, and knows which one is not yet safe.
 
@@ -139,10 +179,16 @@ class _Recorder:
     would lose every later file in that mpv, while carrying on loses none of
     them -- each row still lands in that file. `failed` makes the exit code say
     that something was not recorded.
+
+    Only the library is recorded, the folders in `config.toml`; with none
+    configured, *library* is None and every file is. Since every mpv starts a
+    watcher, a session outside the library -- YouTube, music, a clip -- is the
+    ordinary case, not an error: it is neither written nor queued, only logged.
     """
 
-    def __init__(self) -> None:
-        """Start with nothing in hand and nothing failed."""
+    def __init__(self, library: list[str] | None) -> None:
+        """Start with nothing in hand and nothing failed, recording only *library*."""
+        self.library = library
         self.in_hand: Session | None = None
         self.failed = False
 
@@ -150,7 +196,16 @@ class _Recorder:
         """Resolve and record *session*, queueing it if it cannot be identified."""
         if session is None:
             return
+        # In hand before `_absolute`, which reads the working directory: that
+        # raises if the directory mpv was started in has since been deleted.
         self.in_hand = session
+        session = self.in_hand = _absolute(session)
+        if not _in_library(session.path, self.library):
+            # Logged, so a file missing from the record can be told apart from
+            # one the watcher never saw.
+            _log.event("out_of_scope", path=session.path, max_pos=session.max_pos)
+            self.in_hand = None
+            return
         now = time.time()
         r = resolve_one(session.path)
         row = sessions.row(session, r, now)
@@ -290,12 +345,17 @@ class _Interrupts:
 
 
 def _cmd_watch(socket_path: str | None) -> int:
-    """Record a session for every file mpv plays, until mpv exits or a stop signal arrives."""
+    """Record every library file mpv plays, until mpv exits or a stop signal arrives."""
     socket_path = socket_path or _default_socket()
     if socket_path is None:
         print("XDG_RUNTIME_DIR is unset, so there is no default mpv socket -- "
               "pass --socket PATH", file=sys.stderr)
         return 1
+    # Once per watch: one small file per mpv launched.
+    library = config.library_roots()
+    if library is None:
+        print(f"no library is configured in {config.path()}, so every local file "
+              "is being recorded", file=sys.stderr)
     mpv = MpvSocket(socket_path)
     try:
         mpv.connect()
@@ -304,7 +364,7 @@ def _cmd_watch(socket_path: str | None) -> int:
         print(exc, file=sys.stderr)     # it already names the likely cause
         return 1
     acc = Accumulator()
-    recorder = _Recorder()
+    recorder = _Recorder(library)
     with _Interrupts() as interrupts:
         try:
             _follow(mpv, acc, recorder, interrupts)

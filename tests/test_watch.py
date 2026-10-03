@@ -16,16 +16,31 @@ import pytest
 
 from scrobd import cli, queue, sessions
 from scrobd.mpv import MpvSocket, MpvUnavailableError
-from scrobd.paths import data_dir, state_dir
+from scrobd.paths import config_dir, data_dir, state_dir
+
+
+def configure(*roots):
+    """Make *roots* the library, in the config file `watch` reads at its start."""
+    # A JSON array of strings is a TOML array of strings.
+    (config_dir() / "config.toml").write_text(f"library = {json.dumps(list(roots))}\n")
+
+
+def unconfigure():
+    """Leave no library configured: the unscoped watch."""
+    (config_dir() / "config.toml").unlink()
 
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "s"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "d"))
+    # Never the real config: the owner's library roots would decide what these tests record.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "c"))
     monkeypatch.setenv("SCROBD_LOG", "0")
     # Never the real one: a test that forgets --socket must not reach a running mpv.
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    # Scoped, as the owner's watch is: every file these tests play is under /m.
+    configure("/m")
 
 
 @pytest.fixture(autouse=True)
@@ -168,14 +183,119 @@ def test_a_season_directory_between_episodes_is_recorded_but_not_queued(tmp_path
     assert queue.count() == 0
 
 
-def test_a_url_is_recorded_but_never_queued(tmp_path):
+def test_with_no_library_a_url_is_recorded_but_never_queued(tmp_path):
     """The queue keys on a library folder; an answer for a host would name every URL on it."""
+    unconfigure()
     url = "https://www.youtube.com/watch?v=abc"
     rc = run_watch(tmp_path, [*play(url, 30.0),
                               {"event": "property-change", "name": "duration", "data": 212.0}])
     assert rc == 0
     assert [(r["path"], r["max_pos"]) for r in sessions.read()] == [(url, 30.0)]
     assert queue.count() == 0
+
+
+TV_SHOW = "/media/TV/Show (2020) [tvdbid-99]"
+
+
+@pytest.mark.parametrize("root", ["/media/TV", "/"], ids=["its-folder", "filesystem-root"])
+def test_a_file_under_a_library_root_is_recorded(tmp_path, root):
+    """The root itself is in the library too: lazy directory mode reports a folder as a path."""
+    configure("/media/Movies", root)
+    episode = f"{TV_SHOW}/Season 01/x - S01E03 - t.mkv"
+    rc = run_watch(tmp_path, [{"event": "property-change", "name": "path", "data": "/media/TV"},
+                              *play(episode, 1300.0)])
+    assert rc == 0
+    assert [(r["path"], r["ids"], r["max_pos"]) for r in sessions.read()] == [
+        ("/media/TV", {}, None), (episode, {"tvdb": 99}, 1300.0)]
+
+
+def logged_events(kind):
+    """Return every post-mortem log line of event *kind*, in order."""
+    lines = (state_dir() / "scrobd.jsonl").read_text().splitlines()
+    return [e for e in map(json.loads, lines) if e["event"] == kind]
+
+
+@pytest.mark.parametrize("path", ["/srv/clips/Mystery/x.mkv",
+                                  "https://www.youtube.com/watch?v=abc"],
+                         ids=["outside-every-root", "url"])
+def test_a_file_outside_the_library_is_neither_recorded_nor_queued_but_logged(
+        tmp_path, monkeypatch, path):
+    """Unidentifiable and played, so in the library it would be a row and a question."""
+    monkeypatch.setenv("SCROBD_LOG", "1")
+    configure("/media/TV")
+    rc = run_watch(tmp_path, [*play(path, 60.0),
+                              {"event": "property-change", "name": "duration", "data": 212.0}])
+    assert rc == 0
+    assert sessions.read() == []
+    assert queue.count() == 0
+    assert [(e["path"], e["max_pos"]) for e in logged_events("out_of_scope")] == [(path, 60.0)]
+    assert logged_events("session") == []
+
+
+def test_a_root_does_not_take_in_a_sibling_that_shares_its_prefix(tmp_path):
+    """`/media/TV` is not `/media/TV_Old`: a string prefix alone would say it is."""
+    configure("/media/TV")
+    old = "/media/TV_Old/Show (2020) [tvdbid-99]/Season 01/x - S01E04 - t.mkv"
+    kept = f"{TV_SHOW}/Season 01/x - S01E05 - t.mkv"
+    rc = run_watch(tmp_path, play(old, 1300.0) + play(kept, 1300.0))
+    assert rc == 0
+    assert [r["path"] for r in sessions.read()] == [kept]
+
+
+def test_the_library_check_never_asks_the_filesystem_about_a_played_path(tmp_path, monkeypatch):
+    """The library is on an autofs/sshfs mount that can hang in D state, and the watcher with it.
+
+    `stat` and `lstat` are what `exists`, `is_dir`, `realpath` and `resolve`
+    come down to. Each fails here for a played path rather than reach for it.
+    """
+    asked = []
+
+    def refuse_media(real):
+        def guarded(path, *args, **kwargs):
+            if str(path).startswith("/media/"):
+                asked.append(str(path))
+                raise OSError(5, "a hung mount does not answer")
+            return real(path, *args, **kwargs)
+        return guarded
+
+    monkeypatch.setattr(os, "stat", refuse_media(os.stat))
+    monkeypatch.setattr(os, "lstat", refuse_media(os.lstat))
+    configure("/media/TV")
+    kept = f"{TV_SHOW}/Season 01/x - S01E07 - t.mkv"
+    rc = run_watch(tmp_path, play("/media/TV_Old/x.mkv", 60.0) + play(kept, 1300.0))
+    assert asked == []
+    assert rc == 0
+    assert [r["path"] for r in sessions.read()] == [kept]
+
+
+def test_with_no_library_every_file_is_recorded_and_stderr_says_so(tmp_path, capsys):
+    """One line, in `watch.stderr` where the owner will see it, naming the file to write."""
+    unconfigure()
+    clip = "/srv/clips/Mystery/x.mkv"
+    rc = run_watch(tmp_path, play(clip, 60.0))
+    assert rc == 0
+    assert [r["path"] for r in sessions.read()] == [clip]
+    err = capsys.readouterr().err
+    assert len(err.splitlines()) == 1
+    assert str(config_dir() / "config.toml") in err
+    assert "every local file" in err
+
+
+def test_a_relative_path_from_mpv_is_resolved_against_the_watchers_working_directory(
+        tmp_path, monkeypatch):
+    """`mpv x.mkv` reports `x.mkv`. The watcher inherits mpv's directory, so it resolves there.
+
+    Resolved, the folder names identify the episode; left relative, neither the
+    resolver nor the library could see them.
+    """
+    configure(str(tmp_path / "TV"))
+    show = tmp_path / "TV" / "Show (2020) [tvdbid-99]"
+    show.mkdir(parents=True)
+    monkeypatch.chdir(show)
+    rc = run_watch(tmp_path, play("Season 01/x - S01E06 - t.mkv", 1300.0))
+    assert rc == 0
+    assert [(r["path"], r["ids"], r["episode"]) for r in sessions.read()] == [
+        (f"{show}/Season 01/x - S01E06 - t.mkv", {"tvdb": 99}, 6)]
 
 
 def test_ctrl_c_records_the_session_being_watched(tmp_path, monkeypatch):
